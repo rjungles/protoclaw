@@ -926,6 +926,91 @@ func TestFlexibleStringSlice_UnmarshalText_EmptySliceConsistency(t *testing.T) {
 	})
 }
 
+func TestFlexibleStringSlice_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "single string",
+			input:    `"Thinking..."`,
+			expected: []string{"Thinking..."},
+		},
+		{
+			name:     "single number",
+			input:    `123`,
+			expected: []string{"123"},
+		},
+		{
+			name:     "string array",
+			input:    `["Thinking...", "Still working..."]`,
+			expected: []string{"Thinking...", "Still working..."},
+		},
+		{
+			name:     "mixed array",
+			input:    `["123", 456]`,
+			expected: []string{"123", "456"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var f FlexibleStringSlice
+			if err := json.Unmarshal([]byte(tt.input), &f); err != nil {
+				t.Fatalf("json.Unmarshal(%s) error = %v", tt.input, err)
+			}
+			if len(f) != len(tt.expected) {
+				t.Fatalf("json.Unmarshal(%s) len = %d, want %d", tt.input, len(f), len(tt.expected))
+			}
+			for i, want := range tt.expected {
+				if f[i] != want {
+					t.Fatalf("json.Unmarshal(%s)[%d] = %q, want %q", tt.input, i, f[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfig_TelegramPlaceholderTextAcceptsSingleString(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{
+		"version": 1,
+		"agents": { "defaults": { "workspace": "", "model": "", "max_tokens": 0, "max_tool_iterations": 0 } },
+		"bindings": [],
+		"session": {},
+		"channels": {
+			"telegram": {
+				"enabled": true,
+				"bot_token": "",
+				"allow_from": [],
+				"placeholder": {
+					"enabled": true,
+					"text": "Thinking..."
+				}
+			}
+		},
+		"model_list": [],
+		"gateway": {},
+		"tools": {},
+		"heartbeat": {},
+		"devices": {},
+		"voice": {}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := []string(cfg.Channels.Telegram.Placeholder.Text); len(got) != 1 || got[0] != "Thinking..." {
+		t.Fatalf("placeholder.text = %#v, want [\"Thinking...\"]", got)
+	}
+}
+
 // TestLoadConfig_WarnsForPlaintextAPIKey verifies that LoadConfig resolves a plaintext
 // api_key into memory but does NOT rewrite the config file. File writes are the sole
 // responsibility of SaveConfig.
