@@ -180,6 +180,39 @@ func appendLauncherConsoleHostList(hosts []string, seen map[string]struct{}, val
 	return hosts
 }
 
+func shouldShowLocalhostConsoleEntry(hostInput string) bool {
+	normalizedHostInput := strings.TrimSpace(hostInput)
+	if normalizedHostInput == "" {
+		return true
+	}
+
+	for token := range strings.SplitSeq(normalizedHostInput, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if token == "*" || strings.EqualFold(token, "localhost") {
+			return true
+		}
+
+		ip := net.ParseIP(strings.Trim(token, "[]"))
+		if ip == nil {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			if ip4.String() == "127.0.0.1" || ip4.String() == "0.0.0.0" {
+				return true
+			}
+			continue
+		}
+		if ip.String() == "::1" || ip.String() == "::" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func isConsoleDisplayGlobalIPv6(ip net.IP) bool {
 	if ip == nil || ip.IsLoopback() || ip.To4() != nil {
 		return false
@@ -200,7 +233,9 @@ func launcherConsoleHostsWithLocalAddrs(
 	hosts := make([]string, 0, 8)
 	seen := make(map[string]struct{}, 8)
 
-	hosts = appendUniqueHost(hosts, seen, "localhost")
+	if shouldShowLocalhostConsoleEntry(hostInput) {
+		hosts = appendUniqueHost(hosts, seen, "localhost")
+	}
 
 	normalizedHostInput := strings.TrimSpace(hostInput)
 	if normalizedHostInput == "" {

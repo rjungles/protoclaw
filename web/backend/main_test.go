@@ -227,14 +227,27 @@ func TestLauncherConsoleHosts(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit multi-address binding shows all exact ipv4 and global ipv6 addresses", func(t *testing.T) {
+	t.Run("explicit wildcard star shows localhost first", func(t *testing.T) {
+		hosts := launcherConsoleHostsWithLocalAddrs(
+			"*",
+			false,
+			[]string{"192.168.1.2", "10.0.0.8"},
+			[]string{"2001:db8::1", "2001:db8::2"},
+		)
+		want := []string{"localhost", "2001:db8::1", "2001:db8::2", "192.168.1.2", "10.0.0.8"}
+		if strings.Join(hosts, ",") != strings.Join(want, ",") {
+			t.Fatalf("hosts = %#v, want %#v", hosts, want)
+		}
+	})
+
+	t.Run("explicit multi-address binding without local tokens hides localhost", func(t *testing.T) {
 		hosts := launcherConsoleHostsWithLocalAddrs(
 			"192.168.1.2,10.0.0.8,2001:db8::1,2001:db8::2,fe80::1",
 			false,
 			[]string{"192.168.1.2", "10.0.0.8"},
 			[]string{"2001:db8::1", "2001:db8::2"},
 		)
-		want := []string{"localhost", "192.168.1.2", "10.0.0.8", "2001:db8::1", "2001:db8::2"}
+		want := []string{"192.168.1.2", "10.0.0.8", "2001:db8::1", "2001:db8::2"}
 		if strings.Join(hosts, ",") != strings.Join(want, ",") {
 			t.Fatalf("hosts = %#v, want %#v", hosts, want)
 		}
