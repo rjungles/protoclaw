@@ -1,0 +1,320 @@
+# Manifesto do Sistema de Experiências Editoriais
+# Este manifesto define atores, workflow, políticas e integrações para uma plataforma
+# onde autores submetem relatos brutos, editores os refinam e leitores consomem o conteúdo final.
+
+meta:
+  name: "Experience Platform"
+  version: "1.0.0"
+  description: "Sistema de descrição e publicação de experiências com workflow editorial"
+
+actors:
+  - id: "author"
+    name: "Autor"
+    description: "Cria e submete relatos brutos de experiências"
+    roles: ["creator"]
+    attributes:
+      max_submissions_per_day: 10
+      can_attach_media: true
+      
+  - id: "editor"
+    name: "Editor"
+    description: "Analisa relatos, solicita detalhes e produz narrativa final"
+    roles: ["reviewer", "publisher"]
+    attributes:
+      max_reviews_pending: 50
+      can_request_clarification: true
+      can_publish: true
+      
+  - id: "reader"
+    name: "Leitor"
+    description: "Consome narrativas publicadas"
+    roles: ["consumer"]
+    attributes:
+      can_comment: false
+      can_rate: true
+
+data_model:
+  entities:
+    - name: "experience"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+        - name: "title"
+          type: "string"
+          required: true
+        - name: "raw_content"
+          type: "text"
+          required: true
+        - name: "final_narrative"
+          type: "text"
+          required: false
+        - name: "media_attachments"
+          type: "array<string>"
+          required: false
+        - name: "author_id"
+          type: "string"
+          required: true
+        - name: "editor_id"
+          type: "string"
+          required: false
+        - name: "clarification_notes"
+          type: "text"
+          required: false
+        - name: "state"
+          type: "string"
+          required: true
+          default: "DRAFT"
+        - name: "created_at"
+          type: "timestamp"
+          required: true
+        - name: "updated_at"
+          type: "timestamp"
+          required: true
+
+workflow:
+  entity: "experience"
+  initial_state: "DRAFT"
+  states:
+    - id: "DRAFT"
+      description: "Rascunho inicial sendo preparado pelo autor"
+      transitions:
+        - to: "UNDER_REVIEW"
+          action: "submit_review"
+          allowed_roles: ["creator"]
+          
+    - id: "UNDER_REVIEW"
+      description: "Em análise pelo editor"
+      transitions:
+        - to: "CLARIFICATION_NEEDED"
+          action: "request_clarification"
+          allowed_roles: ["reviewer"]
+        - to: "DRAFTING"
+          action: "start_drafting"
+          allowed_roles: ["reviewer"]
+        - to: "REJECTED"
+          action: "reject"
+          allowed_roles: ["reviewer"]
+          
+    - id: "CLARIFICATION_NEEDED"
+      description: "Aguardando informações adicionais do autor"
+      transitions:
+        - to: "UNDER_REVIEW"
+          action: "resubmit_for_review"
+          allowed_roles: ["creator"]
+        - to: "DRAFT"
+          action: "cancel_clarification"
+          allowed_roles: ["creator"]
+          
+    - id: "DRAFTING"
+      description: "Editor produzindo narrativa final"
+      transitions:
+        - to: "PUBLISHED"
+          action: "approve_publish"
+          allowed_roles: ["publisher"]
+        - to: "UNDER_REVIEW"
+          action: "return_to_review"
+          allowed_roles: ["reviewer"]
+          
+    - id: "PUBLISHED"
+      description: "Narrativa publicada e disponível para leitores"
+      transitions:
+        - to: "ARCHIVED"
+          action: "archive"
+          allowed_roles: ["publisher"]
+          
+    - id: "REJECTED"
+      description: "Relato rejeitado"
+      transitions:
+        - to: "DRAFT"
+          action: "revise_and_resubmit"
+          allowed_roles: ["creator"]
+          
+    - id: "ARCHIVED"
+      description: "Conteúdo arquivado"
+      transitions:
+        - to: "DRAFT"
+          action: "restore"
+          allowed_roles: ["publisher"]
+
+policies:
+  # Política de acesso ao recurso experience
+  - name: "experience.access"
+    rego: |
+      package experience.access
+      
+      default allow = false
+      
+      # Leitores podem apenas ler conteúdos publicados
+      allow {
+        input.user.roles[_] == "consumer"
+        input.action == "read"
+        input.state == "PUBLISHED"
+      }
+      
+      # Autores podem ler e escrever seus próprios rascunhos
+      allow {
+        input.user.roles[_] == "creator"
+        input.action == "read"
+        input.resource.author_id == input.user.id
+      }
+      
+      allow {
+        input.user.roles[_] == "creator"
+        input.action == "write"
+        input.state == "DRAFT"
+        input.resource.author_id == input.user.id
+      }
+      
+      allow {
+        input.user.roles[_] == "creator"
+        input.action == "submit_review"
+        input.state == "DRAFT"
+        input.resource.author_id == input.user.id
+      }
+      
+      allow {
+        input.user.roles[_] == "creator"
+        input.action == "resubmit_for_review"
+        input.state == "CLARIFICATION_NEEDED"
+        input.resource.author_id == input.user.id
+      }
+      
+      # Editores (reviewers) podem ler e analisar qualquer conteúdo em review
+      allow {
+        input.user.roles[_] == "reviewer"
+        input.action == "read"
+        input.state != "DRAFT"
+      }
+      
+      allow {
+        input.user.roles[_] == "reviewer"
+        input.action == "request_clarification"
+        input.state == "UNDER_REVIEW"
+      }
+      
+      allow {
+        input.user.roles[_] == "reviewer"
+        input.action == "start_drafting"
+        input.state == "UNDER_REVIEW"
+      }
+      
+      allow {
+        input.user.roles[_] == "reviewer"
+        input.action == "reject"
+        input.state == "UNDER_REVIEW"
+      }
+      
+      allow {
+        input.user.roles[_] == "reviewer"
+        input.action == "return_to_review"
+        input.state == "DRAFTING"
+      }
+      
+      # Publishers podem publicar e arquivar
+      allow {
+        input.user.roles[_] == "publisher"
+        input.action == "approve_publish"
+        input.state == "DRAFTING"
+      }
+      
+      allow {
+        input.user.roles[_] == "publisher"
+        input.action == "archive"
+        input.state == "PUBLISHED"
+      }
+      
+      allow {
+        input.user.roles[_] == "publisher"
+        input.action == "restore"
+        input.state == "ARCHIVED"
+      }
+
+  # Política de rate limiting para submissões
+  - name: "experience.rate_limit"
+    rego: |
+      package experience.rate_limit
+      
+      default allow = true
+      
+      # Autores não podem exceder o limite diário de submissões
+      deny {
+        input.user.roles[_] == "creator"
+        input.action == "submit_review"
+        input.user.submissions_today >= input.user.max_submissions_per_day
+      }
+      
+      allow {
+        not deny
+      }
+
+  # Política de validação de conteúdo
+  - name: "experience.content_validation"
+    rego: |
+      package experience.content_validation
+      
+      default allow = false
+      
+      # Conteúdo deve ter título e raw_content
+      allow {
+        input.action == "create"
+        input.resource.title != ""
+        input.resource.raw_content != ""
+        len(input.resource.raw_content) >= 50
+      }
+      
+      allow {
+        input.action == "update"
+        input.resource.title != ""
+      }
+
+integrations:
+  apis:
+    - name: "experiences_api"
+      base_path: "/api/v1/experiences"
+      operations:
+        - method: "GET"
+          path: "/"
+          description: "Lista experiências publicadas"
+          allowed_roles: ["consumer", "creator", "reviewer", "publisher"]
+        - method: "GET"
+          path: "/{id}"
+          description: "Obtém detalhes de uma experiência"
+          allowed_roles: ["consumer", "creator", "reviewer", "publisher"]
+        - method: "POST"
+          path: "/"
+          description: "Cria nova experiência"
+          allowed_roles: ["creator"]
+        - method: "PUT"
+          path: "/{id}"
+          description: "Atualiza experiência"
+          allowed_roles: ["creator", "reviewer", "publisher"]
+        - method: "POST"
+          path: "/{id}/actions/{action}"
+          description: "Executa ação de workflow"
+          allowed_roles: ["creator", "reviewer", "publisher"]
+  
+  mcps:
+    - name: "experience_mcp_server"
+      description: "MCP server para integração com ferramentas externas"
+      tools:
+        - name: "get_experience"
+          description: "Obtém uma experiência por ID"
+        - name: "list_experiences"
+          description: "Lista experiências com filtros"
+        - name: "transition_experience"
+          description: "Executa transição de workflow"
+
+security:
+  authentication:
+    required: true
+    methods: ["jwt", "api_key"]
+    
+  authorization:
+    default_policy: "deny"
+    policy_engine: "opa"
+    
+  audit:
+    enabled: true
+    log_actions: ["create", "update", "delete", "transition"]
+    log_fields: ["user_id", "resource_id", "action", "timestamp", "old_state", "new_state"]

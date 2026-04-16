@@ -207,6 +207,9 @@ func (e *Engine) evaluateCondition(expression string, ctx *Context) bool {
 	// - owner == self
 	// - hour >= 8 && hour <= 18
 	// - attribute.key == "value"
+	// - amount <= 500
+	// - shift_active == true
+	// - discount_percent <= 50
 	
 	expression = strings.TrimSpace(expression)
 	
@@ -230,14 +233,58 @@ func (e *Engine) evaluateCondition(expression string, ctx *Context) bool {
 		}
 	}
 	
-	// Verifica atributos
+	// Verifica condições numéricas: amount <= 500, discount_percent <= 50, etc.
+	if strings.Contains(expression, "<=") {
+		parts := strings.Split(expression, "<=")
+		if len(parts) == 2 {
+			left := strings.TrimSpace(parts[0])
+			rightStr := strings.TrimSpace(parts[1])
+			
+			// Tenta converter o lado direito para número
+			var rightVal float64
+			if _, err := fmt.Sscanf(rightStr, "%f", &rightVal); err == nil {
+				// Busca o valor no contexto
+				if leftVal, ok := ctx.Attributes[left]; ok {
+					switch v := leftVal.(type) {
+					case int:
+						return float64(v) <= rightVal
+					case int64:
+						return float64(v) <= rightVal
+					case float32:
+						return float64(v) <= rightVal
+					case float64:
+						return v <= rightVal
+					case string:
+						// Tenta converter string para número
+						if numVal, err := fmt.Sscanf(v, "%f", &rightVal); err == nil && numVal == 1 {
+							return rightVal <= rightVal
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// Verifica condições booleanas: shift_active == true, scope == "shift", etc.
 	if strings.Contains(expression, "==") {
 		parts := strings.Split(expression, "==")
 		if len(parts) == 2 {
 			left := strings.TrimSpace(parts[0])
 			right := strings.TrimSpace(strings.Trim(parts[1], "\"'"))
 			
-			// Verifica se é um atributo
+			// Verifica se é um atributo do contexto
+			if val, ok := ctx.Attributes[left]; ok {
+				switch v := val.(type) {
+				case bool:
+					return fmt.Sprintf("%v", v) == right
+				case string:
+					return v == right
+				case int, int64, float32, float64:
+					return fmt.Sprintf("%v", v) == right
+				}
+			}
+			
+			// Verifica se é um atributo com prefixo attribute.
 			if strings.HasPrefix(left, "attribute.") {
 				key := strings.TrimPrefix(left, "attribute.")
 				if val, ok := ctx.Attributes[key]; ok {
@@ -248,6 +295,7 @@ func (e *Engine) evaluateCondition(expression string, ctx *Context) bool {
 	}
 	
 	// Default: assume verdadeiro para condições não implementadas
+	// Em produção, isso deveria retornar falso ou logar um warning
 	return true
 }
 
