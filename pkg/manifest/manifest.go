@@ -187,14 +187,62 @@ type SchemaRef struct {
 	Fields []string `yaml:"fields,omitempty" json:"fields,omitempty"`
 }
 
+// MCPTool define uma ferramenta MCP
+type MCPTool struct {
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+}
+
 // MCPConfig define uma integração MCP
 type MCPConfig struct {
 	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Server      string            `yaml:"server" json:"server"`
 	Transport   string            `yaml:"transport" json:"transport"` // stdio, sse, websocket
 	Config      map[string]string `yaml:"config,omitempty" json:"config,omitempty"`
-	Tools       []string          `yaml:"tools,omitempty" json:"tools,omitempty"`
+	Tools       []MCPToolString   `yaml:"tools,omitempty" json:"tools,omitempty"`
 	Resources   []string          `yaml:"resources,omitempty" json:"resources,omitempty"`
+}
+
+// MCPToolString suporta tanto string quanto MCPTool para ferramentas MCP
+type MCPToolString struct {
+	Name        string
+	Description string
+}
+
+// UnmarshalYAML implementa unmarshalling personalizado para MCPToolString
+func (m *MCPToolString) UnmarshalYAML(value *yaml.Node) error {
+	// Tentar como string simples
+	var s string
+	if err := value.Decode(&s); err == nil {
+		m.Name = s
+		return nil
+	}
+	
+	// Tentar como objeto com nome e descrição
+	type toolObj struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+	}
+	var t toolObj
+	if err := value.Decode(&t); err == nil {
+		m.Name = t.Name
+		m.Description = t.Description
+		return nil
+	}
+	
+	return fmt.Errorf("não foi possível fazer parse da ferramenta MCP")
+}
+
+// MarshalYAML implementa marshalling personalizado para MCPToolString
+func (m MCPToolString) MarshalYAML() (interface{}, error) {
+	if m.Description != "" {
+		return map[string]string{
+			"name":        m.Name,
+			"description": m.Description,
+		}, nil
+	}
+	return m.Name, nil
 }
 
 // ChannelConfig define um canal de comunicação
