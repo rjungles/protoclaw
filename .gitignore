@@ -1,15 +1,15 @@
 ```
 # Compiled and build artifacts
-*.pyc
-__pycache__/
 *.o
 *.obj
-*.class
+*.out
 *.exe
 *.dll
 *.so
 *.a
-*.out
+*.class
+*.pyc
+__pycache__/
 
 # Dependencies
 node_modules/
@@ -17,7 +17,7 @@ venv/
 .venv/
 .env
 .env.local
-.env.*
+*.env.*
 
 # Build directories
 dist/
@@ -25,35 +25,24 @@ build/
 target/
 .gradle/
 
-# Python specific
-*.pyc
-__pycache__/
-*.pyo
-*.pyd
-.Python
-*.so
-.Python
-*.egg-info/
-.eggs/
+# Cache directories
 .mypy_cache/
 .pytest_cache/
-.coverage
 coverage/
 htmlcov/
+.cov/
 
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-*.swo
-
-# Editors
+# Editors and IDEs
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # System files
 .DS_Store
 Thumbs.db
+*.log
+*.tmp
 
 # Compressed files
 *.zip
