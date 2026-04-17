@@ -14,6 +14,19 @@ type ResultInterface interface {
 	RowsAffected() (int64, error)
 }
 
+// mockResultWrapper adapta ResultInterface para sql.Result
+type mockResultWrapper struct {
+	ResultInterface
+}
+
+func (w *mockResultWrapper) LastInsertId() (int64, error) {
+	return w.ResultInterface.LastInsertId()
+}
+
+func (w *mockResultWrapper) RowsAffected() (int64, error) {
+	return w.ResultInterface.RowsAffected()
+}
+
 // MockDB é um banco de dados em memória para testes
 type MockDB struct {
 	mu         sync.Mutex
@@ -458,6 +471,18 @@ func (m *MockDB) GetTableColumns(tableName string) []string {
 		return table.columns
 	}
 	return nil
+}
+
+// ListTables retorna lista de tabelas
+func (m *MockDB) ListTables() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	var tables []string
+	for name := range m.tables {
+		tables = append(tables, name)
+	}
+	return tables
 }
 
 // GetMigrations retorna migrações aplicadas

@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -38,7 +37,7 @@ type SchemaChange struct {
 
 // DBInterface define a interface para banco de dados
 type DBInterface interface {
-	Exec(query string, args ...interface{}) (sql.Result, error)
+	Exec(query string, args ...interface{}) (ResultInterface, error)
 	Query(query string, args ...interface{}) (RowsInterface, error)
 	QueryRow(query string, args ...interface{}) RowInterface
 }
