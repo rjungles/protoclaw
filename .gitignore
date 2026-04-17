@@ -1,35 +1,15 @@
 ```
-# Dependencies
-go.sum
-vendor/
-
-# Build artifacts
+# Compiled and build artifacts
 *.o
-*.a
-*.so
-*.exe
-*.dll
-*.dylib
-*.pyc
-*.class
 *.obj
 *.out
 
-# Directories
-bin/
-pkg/
-target/
-build/
-dist/
-node_modules/
-.venv/
-venv/
-__pycache__/
-.mypy_cache/
-.pytest_cache/
-.coverage
-coverage/
-htmlcov/
+# Dependencies
+vendor/
+
+# Logs and temp files
+*.log
+*.tmp
 
 # Environment
 .env
@@ -39,14 +19,13 @@ htmlcov/
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# Coverage
+coverage/
+htmlcov/
+.coverage
 
-# Logs
-*.log
-*.tmp
+# Go specific
+*.test
+*.prof
 ```

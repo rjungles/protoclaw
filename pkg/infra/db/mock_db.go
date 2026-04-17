@@ -148,7 +148,16 @@ func (m *MockDB) ExecContext(ctx context.Context, query string, args ...interfac
 }
 
 func (m *MockDB) handleCreateTable(query string) (*mockResult, error) {
-	// Extrair nome da tabela
+	// Extrair nome da tabela - lidar com "CREATE TABLE IF NOT EXISTS name"
+	query = strings.TrimSpace(query)
+	upperQuery := strings.ToUpper(query)
+	
+	// Remover "IF NOT EXISTS" se presente
+	ifExistsIdx := strings.Index(upperQuery, "IF NOT EXISTS")
+	if ifExistsIdx != -1 {
+		query = query[:ifExistsIdx] + query[ifExistsIdx+13:] // Remove "IF NOT EXISTS"
+	}
+	
 	parts := strings.Fields(query)
 	if len(parts) < 3 {
 		return nil, fmt.Errorf("CREATE TABLE inválido")
