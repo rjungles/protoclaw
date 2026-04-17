@@ -14,14 +14,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/manifest"
 )
 
-// Migrator gerencia migrações automáticas de banco de dados baseadas no manifesto
-type Migrator struct {
-	db           *sql.DB
-	manifest     *manifest.Manifest
-	mu           sync.Mutex
-	migrationLog []MigrationRecord
-}
-
 // MigrationRecord representa um registro de migração
 type MigrationRecord struct {
 	ID          int
@@ -44,8 +36,36 @@ type SchemaChange struct {
 	FieldName   string
 }
 
+// DBInterface define a interface para banco de dados
+type DBInterface interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	Query(query string, args ...interface{}) (RowsInterface, error)
+	QueryRow(query string, args ...interface{}) RowInterface
+}
+
+// RowsInterface define interface para rows
+type RowsInterface interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	Close() error
+	Err() error
+}
+
+// RowInterface define interface para row
+type RowInterface interface {
+	Scan(dest ...interface{}) error
+}
+
+// Migrator gerencia migrações automáticas de banco de dados baseadas no manifesto
+type Migrator struct {
+	db           DBInterface
+	manifest     *manifest.Manifest
+	mu           sync.Mutex
+	migrationLog []MigrationRecord
+}
+
 // NewMigrator cria uma nova instância do migrator
-func NewMigrator(db *sql.DB, m *manifest.Manifest) *Migrator {
+func NewMigrator(db DBInterface, m *manifest.Manifest) *Migrator {
 	return &Migrator{
 		db:       db,
 		manifest: m,
@@ -337,8 +357,38 @@ func (m *Migrator) applyChange(ctx context.Context, change SchemaChange) error {
 		return nil
 	}
 
-	// Executar SQL
-	_, err := m.db.ExecContext(ctx, change.SQL)
+	// DBInterface com ExecContext
+	type DBWithContext interface {
+		DBInterface
+		ExecContext(ctx context.Context, query string, args ...interface{}) (ResultInterface, error)
+	}
+
+	// Verificar se db suporta ExecContext
+	dbWithCtx, ok := m.db.(DBWithContext)
+	if !ok {
+		// Fallback para Exec normal
+		_, err := m.db.Exec(change.SQL)
+		success := err == nil
+		description := m.generateChangeDescription(change)
+		record := MigrationRecord{
+			Checksum:    checksum,
+			Version:     time.Now().Format("20060102150405"),
+			Description: description,
+			AppliedAt:   time.Now(),
+			Success:     success,
+		}
+		if err := m.recordMigration(record); err != nil {
+			return fmt.Errorf("falha ao registrar migração: %w", err)
+		}
+		if !success {
+			return fmt.Errorf("migração falhou: %s", change.SQL)
+		}
+		m.migrationLog = append(m.migrationLog, record)
+		return nil
+	}
+
+	// Executar SQL com contexto
+	_, err := dbWithCtx.ExecContext(ctx, change.SQL)
 	success := err == nil
 
 	// Gerar descrição da mudança

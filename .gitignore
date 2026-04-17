@@ -1,1 +1,37 @@
-Nothing to output - the added files are source code files (.go files) and there are no build artifacts, dependencies, or temporary files in the changes that require ignoring.
+```
+# Dependencies
+vendor/
+
+# Build artifacts
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Go specific
+*.test
+*.prof
+cover.out
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```
