@@ -1,51 +1,17 @@
 ```
-# Compiled and build artifacts
-*.pyc
-__pycache__/
+# Dependencies
+vendor/
+
+# Build artifacts
 *.o
 *.obj
-*.class
-*.exe
-*.dll
-*.so
 *.a
-*.out
-
-# Dependencies
-node_modules/
-venv/
-.venv/
-.env
-.env.local
-*.env.*
-
-# Build directories
-dist/
-build/
-target/
-.gradle/
-
-# Python specific
-*.pyc
-__pycache__/
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.env
-.env.local
-.env.*
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+*.so
+*.dylib
+*.dll
+*.exe
 
 # Go specific
-*.o
-*.a
-*.out
 *.test
 *.prof
 cover.out
@@ -53,8 +19,6 @@ cover.out
 # Logs and temp files
 *.log
 *.tmp
-*.swp
-*.swo
 
 # Editors
 .vscode/
@@ -62,7 +26,12 @@ cover.out
 *.swp
 *.swo
 
-# System files
+# Environment
+.env
+.env.local
+*.env.*
+
+# OS generated files
 .DS_Store
 Thumbs.db
 
