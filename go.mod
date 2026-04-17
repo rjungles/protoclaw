@@ -1,6 +1,6 @@
 module github.com/sipeed/picoclaw
 
-go 1.24.4
+go 1.19
 
 require (
 	fyne.io/systray v1.12.0

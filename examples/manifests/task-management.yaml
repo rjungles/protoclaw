@@ -1,0 +1,661 @@
+# Manifesto de Exemplo - Sistema de Gestão de Tarefas
+# Este arquivo define todos os requisitos funcionais e não funcionais do sistema
+
+metadata:
+  name: "TaskManagementSystem"
+  version: "1.0.0"
+  description: "Sistema completo de gestão de tarefas com equipes e projetos"
+  author: "Equipe de Desenvolvimento"
+  created_at: "2024-01-15"
+  tags:
+    - tasks
+    - project-management
+    - collaboration
+  labels:
+    environment: production
+    team: engineering
+
+# Definição dos atores do sistema
+actors:
+  - id: "admin"
+    name: "Administrador do Sistema"
+    description: "Usuário com acesso total ao sistema"
+    roles:
+      - admin
+      - manager
+      - member
+    permissions:
+      - resource: "*"
+        actions: ["*"]
+
+  - id: "manager"
+    name: "Gerente de Projeto"
+    description: "Responsável por gerenciar projetos e equipes"
+    roles:
+      - manager
+      - member
+    permissions:
+      - resource: "projects"
+        actions: ["read", "write", "delete"]
+      - resource: "tasks"
+        actions: ["read", "write", "delete"]
+      - resource: "teams"
+        actions: ["read", "write"]
+      - resource: "members"
+        actions: ["read", "write"]
+      - resource: "reports"
+        actions: ["read", "execute"]
+
+  - id: "member"
+    name: "Membro da Equipe"
+    description: "Usuário que executa tarefas"
+    roles:
+      - member
+    permissions:
+      - resource: "projects"
+        actions: ["read"]
+      - resource: "tasks"
+        actions: ["read", "write"]
+        condition: "owner == self"
+      - resource: "tasks"
+        actions: ["read"]
+      - resource: "comments"
+        actions: ["read", "write", "delete"]
+        condition: "owner == self"
+
+  - id: "viewer"
+    name: "Observador"
+    description: "Usuário com acesso apenas de leitura"
+    roles:
+      - viewer
+    permissions:
+      - resource: "projects"
+        actions: ["read"]
+      - resource: "tasks"
+        actions: ["read"]
+      - resource: "comments"
+        actions: ["read"]
+
+# Modelo de dados do sistema
+data_model:
+  entities:
+    - name: "User"
+      description: "Usuário do sistema"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "email"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+        - name: "password_hash"
+          type: "string"
+          required: true
+        - name: "role"
+          type: "string"
+          required: true
+          default: "member"
+        - name: "active"
+          type: "bool"
+          required: true
+          default: true
+        - name: "created_at"
+          type: "datetime"
+          required: true
+        - name: "updated_at"
+          type: "datetime"
+          required: true
+      indexes:
+        - name: "idx_user_email"
+          fields: ["email"]
+          unique: true
+        - name: "idx_user_role"
+          fields: ["role"]
+
+    - name: "Project"
+      description: "Projeto contendo tarefas"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 200
+        - name: "description"
+          type: "string"
+        - name: "owner_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "User"
+            field: "id"
+            on_delete: "cascade"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "active"
+        - name: "start_date"
+          type: "datetime"
+        - name: "end_date"
+          type: "datetime"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+        - name: "updated_at"
+          type: "datetime"
+          required: true
+      indexes:
+        - name: "idx_project_owner"
+          fields: ["owner_id"]
+        - name: "idx_project_status"
+          fields: ["status"]
+
+    - name: "Task"
+      description: "Tarefa dentro de um projeto"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "title"
+          type: "string"
+          required: true
+          max_length: 300
+        - name: "description"
+          type: "string"
+        - name: "project_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "Project"
+            field: "id"
+            on_delete: "cascade"
+        - name: "assignee_id"
+          type: "reference"
+          reference:
+            entity: "User"
+            field: "id"
+            on_delete: "set_null"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "todo"
+        - name: "priority"
+          type: "string"
+          required: true
+          default: "medium"
+        - name: "due_date"
+          type: "datetime"
+        - name: "completed_at"
+          type: "datetime"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+        - name: "updated_at"
+          type: "datetime"
+          required: true
+      indexes:
+        - name: "idx_task_project"
+          fields: ["project_id"]
+        - name: "idx_task_assignee"
+          fields: ["assignee_id"]
+        - name: "idx_task_status"
+          fields: ["status"]
+        - name: "idx_task_priority"
+          fields: ["priority"]
+      constraints:
+        - name: "chk_priority"
+          type: "check"
+          expression: "priority IN ('low', 'medium', 'high', 'urgent')"
+
+    - name: "Comment"
+      description: "Comentário em uma tarefa"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "content"
+          type: "string"
+          required: true
+        - name: "task_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "Task"
+            field: "id"
+            on_delete: "cascade"
+        - name: "author_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "User"
+            field: "id"
+            on_delete: "cascade"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+        - name: "updated_at"
+          type: "datetime"
+          required: true
+      indexes:
+        - name: "idx_comment_task"
+          fields: ["task_id"]
+        - name: "idx_comment_author"
+          fields: ["author_id"]
+
+    - name: "Team"
+      description: "Equipe de usuários"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+        - name: "description"
+          type: "string"
+        - name: "leader_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "User"
+            field: "id"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+      indexes:
+        - name: "idx_team_leader"
+          fields: ["leader_id"]
+
+    - name: "TeamMember"
+      description: "Relação muitos-para-muitos entre equipes e usuários"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "team_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "Team"
+            field: "id"
+            on_delete: "cascade"
+        - name: "user_id"
+          type: "reference"
+          required: true
+          reference:
+            entity: "User"
+            field: "id"
+            on_delete: "cascade"
+        - name: "joined_at"
+          type: "datetime"
+          required: true
+      indexes:
+        - name: "idx_teammember_team"
+          fields: ["team_id"]
+        - name: "idx_teammember_user"
+          fields: ["user_id"]
+      constraints:
+        - name: "uniq_team_user"
+          type: "unique"
+          fields: ["team_id", "user_id"]
+
+  relations:
+    - name: "user_projects"
+      from: "User"
+      to: "Project"
+      type: "one_to_many"
+    
+    - name: "project_tasks"
+      from: "Project"
+      to: "Task"
+      type: "one_to_many"
+    
+    - name: "user_tasks"
+      from: "User"
+      to: "Task"
+      type: "one_to_many"
+    
+    - name: "task_comments"
+      from: "Task"
+      to: "Comment"
+      type: "one_to_many"
+    
+    - name: "user_comments"
+      from: "User"
+      to: "Comment"
+      type: "one_to_many"
+    
+    - name: "team_members"
+      from: "Team"
+      to: "User"
+      type: "many_to_many"
+      through: "TeamMember"
+
+# Regras de negócio do sistema
+business_rules:
+  - id: "BR001"
+    name: "Validar Data de Término"
+    description: "Impede que a data de término seja anterior à data de início"
+    trigger:
+      event: "create"
+      entities: ["Project"]
+      before: true
+    condition: "end_date >= start_date OR end_date IS NULL"
+    actions:
+      - type: "validate"
+        target: "end_date"
+    enabled: true
+    priority: 1
+
+  - id: "BR002"
+    name: "Notificar Atribuição de Tarefa"
+    description: "Envia notificação quando uma tarefa é atribuída a um usuário"
+    trigger:
+      event: "update"
+      entities: ["Task"]
+      after: true
+    condition: "assignee_id changed"
+    actions:
+      - type: "notify"
+        target: "assignee"
+        parameters:
+          channel: "email"
+          template: "task_assigned"
+    enabled: true
+    priority: 2
+
+  - id: "BR003"
+    name: "Atualizar Status do Projeto"
+    description: "Marca projeto como concluído quando todas as tarefas estão concluídas"
+    trigger:
+      event: "update"
+      entities: ["Task"]
+      after: true
+    condition: "status == 'completed'"
+    actions:
+      - type: "execute"
+        target: "project"
+        script: "if all_tasks_completed then status = 'completed'"
+    enabled: true
+    priority: 3
+
+  - id: "BR004"
+    name: "Validar Prioridade da Tarefa"
+    description: "Garante que a prioridade seja um valor válido"
+    trigger:
+      event: "create"
+      entities: ["Task"]
+      before: true
+    condition: "priority IN ('low', 'medium', 'high', 'urgent')"
+    actions:
+      - type: "validate"
+        target: "priority"
+    enabled: true
+    priority: 1
+
+  - id: "BR005"
+    name: "Registrar Histórico de Status"
+    description: "Registra mudanças de status das tarefas para auditoria"
+    trigger:
+      event: "update"
+      entities: ["Task"]
+      after: true
+    condition: "status changed"
+    actions:
+      - type: "execute"
+        target: "audit_log"
+        script: "log_status_change(task_id, old_status, new_status)"
+    enabled: true
+    priority: 4
+
+# Integrações do sistema
+integrations:
+  apis:
+    - name: "Public REST API"
+      base_path: "/api/v1"
+      version: "1.0.0"
+      endpoints:
+        - path: "/projects"
+          method: "GET"
+          description: "Lista todos os projetos"
+          handler: "list_projects"
+          output:
+            entity: "Project"
+          permissions: ["member", "manager", "admin"]
+        
+        - path: "/projects"
+          method: "POST"
+          description: "Cria um novo projeto"
+          handler: "create_project"
+          input:
+            entity: "Project"
+            fields: ["name", "description", "start_date", "end_date"]
+          permissions: ["manager", "admin"]
+        
+        - path: "/projects/{id}"
+          method: "GET"
+          description: "Obtém detalhes de um projeto"
+          handler: "get_project"
+          permissions: ["member", "manager", "admin"]
+        
+        - path: "/projects/{id}"
+          method: "PUT"
+          description: "Atualiza um projeto"
+          handler: "update_project"
+          permissions: ["manager", "admin"]
+        
+        - path: "/projects/{id}"
+          method: "DELETE"
+          description: "Remove um projeto"
+          handler: "delete_project"
+          permissions: ["admin"]
+        
+        - path: "/tasks"
+          method: "GET"
+          description: "Lista tarefas com filtros"
+          handler: "list_tasks"
+          output:
+            entity: "Task"
+          permissions: ["member", "manager", "admin"]
+        
+        - path: "/tasks"
+          method: "POST"
+          description: "Cria uma nova tarefa"
+          handler: "create_task"
+          permissions: ["member", "manager", "admin"]
+        
+        - path: "/tasks/{id}"
+          method: "PATCH"
+          description: "Atualiza parcialmente uma tarefa"
+          handler: "patch_task"
+          permissions: ["member", "manager", "admin"]
+        
+        - path: "/users/me"
+          method: "GET"
+          description: "Obtém informações do usuário atual"
+          handler: "get_current_user"
+          permissions: ["member", "manager", "admin"]
+        
+        - path: "/reports/summary"
+          method: "GET"
+          description: "Gera relatório resumido"
+          handler: "generate_summary_report"
+          permissions: ["manager", "admin"]
+      
+      auth:
+        type: "jwt"
+        config:
+          token_expiry: "24h"
+          refresh_enabled: "true"
+      
+      rate_limit:
+        requests_per_second: 100
+        burst_size: 200
+      
+      cors:
+        allowed_origins:
+          - "https://app.example.com"
+          - "https://admin.example.com"
+        allowed_methods:
+          - "GET"
+          - "POST"
+          - "PUT"
+          - "PATCH"
+          - "DELETE"
+          - "OPTIONS"
+        allowed_headers:
+          - "Authorization"
+          - "Content-Type"
+          - "X-Request-ID"
+
+  mcps:
+    - name: "Email Service MCP"
+      server: "email-mcp"
+      transport: "stdio"
+      config:
+        smtp_host: "${SMTP_HOST}"
+        smtp_port: "${SMTP_PORT}"
+      tools:
+        - send_email
+        - send_bulk_email
+  
+  channels:
+    - type: "web"
+      name: "Web Application"
+      config:
+        port: "8080"
+        host: "0.0.0.0"
+        static_dir: "./static"
+      agents:
+        - task-assistant
+      enabled: true
+    
+    - type: "slack"
+      name: "Slack Integration"
+      config:
+        bot_token: "${SLACK_BOT_TOKEN}"
+        signing_secret: "${SLACK_SIGNING_SECRET}"
+      agents:
+        - task-assistant
+      enabled: false
+
+  webhooks:
+    - name: "Task Created Webhook"
+      url: "${WEBHOOK_TASK_CREATED_URL}"
+      method: "POST"
+      events:
+        - "task.created"
+      headers:
+        Content-Type: "application/json"
+        X-Webhook-Secret: "${WEBHOOK_SECRET}"
+      retry:
+        max_retries: 3
+        delay_ms: 1000
+
+# Políticas de segurança
+security:
+  authentication:
+    methods:
+      - jwt
+      - api_key
+    session_timeout_minutes: 480  # 8 horas
+    mfa_required: false
+    password_policy:
+      min_length: 8
+      require_uppercase: true
+      require_lowercase: true
+      require_numbers: true
+      require_special: false
+
+  authorization:
+    model: "rbac"
+    default_deny: true
+    role_hierarchy:
+      - role: "admin"
+        inherits:
+          - "manager"
+      - role: "manager"
+        inherits:
+          - "member"
+      - role: "member"
+        inherits:
+          - "viewer"
+    context_conditions:
+      - name: "account_active"
+        expression: "attribute.user.active == true"
+        message: "Conta de usuário está inativa"
+
+  data_protection:
+    encryption_at_rest: true
+    encryption_in_transit: true
+    sensitive_fields:
+      - entity: "User"
+        field: "password_hash"
+        encryption: true
+        masking: false
+      - entity: "User"
+        field: "email"
+        encryption: false
+        masking: true
+        mask_pattern: "***@***.***"
+    data_retention:
+      default_days: 730  # 2 anos
+      rules:
+        - entity: "Task"
+          days: 365
+          action: "archive"
+        - entity: "Comment"
+          days: 365
+          action: "archive"
+
+  audit:
+    enabled: true
+    log_level: "info"
+    include_events:
+      - "create"
+      - "update"
+      - "delete"
+      - "login"
+      - "logout"
+    exclude_events:
+      - "read"
+    retention_days: 365
+    storage_backend: "database"
+
+# Requisitos não funcionais
+non_functional:
+  performance:
+    max_response_time_ms: 300
+    max_concurrent_users: 5000
+    throughput_rps: 1000
+
+  reliability:
+    availability_percent: 99.9
+    mttr_minutes: 60
+    mtbf_hours: 2160  # 90 dias
+
+  scalability:
+    auto_scaling: true
+    min_instances: 2
+    max_instances: 20
+    scaling_metrics:
+      - cpu
+      - memory
+      - request_count
+
+  compliance:
+    standards:
+      - GDPR
+      - LGPD
+    region: "south-america-east1"

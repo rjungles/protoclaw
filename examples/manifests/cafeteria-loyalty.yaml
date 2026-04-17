@@ -1,0 +1,760 @@
+# Manifesto do Sistema de Fidelidade para Cafeteria
+# AgentOS - PicoClaw
+
+metadata:
+  name: "cafeteria-loyalty-system"
+  version: "1.0.0"
+  description: "Sistema de fidelidade e recompensas para cafeteria"
+  author: "AgentOS Team"
+  created_at: "2025-01-15"
+  tags:
+    - loyalty
+    - retail
+    - cafeteria
+    - rewards
+  labels:
+    industry: "food-beverage"
+    type: "loyalty-program"
+
+# Atores do sistema
+actors:
+  - id: "customer"
+    name: "Cliente"
+    description: "Cliente da cafeteria participante do programa de fidelidade"
+    roles:
+      - "customer"
+    permissions:
+      - resource: "loyalty_account"
+        actions: ["read"]
+        condition: "owner==self"
+      - resource: "rewards"
+        actions: ["read", "redeem"]
+        condition: "owner==self"
+      - resource: "transactions"
+        actions: ["read"]
+        condition: "owner==self"
+      - resource: "products"
+        actions: ["read"]
+    attributes:
+      tier: "base" # base, silver, gold, platinum
+      signup_channel: "mobile_app"
+
+  - id: "barista"
+    name: "Barista"
+    description: "Funcionário que atende clientes e registra transações"
+    roles:
+      - "staff"
+      - "operator"
+    permissions:
+      - resource: "customers"
+        actions: ["read"]
+      - resource: "transactions"
+        actions: ["create", "read"]
+      - resource: "products"
+        actions: ["read"]
+      - resource: "loyalty_account"
+        actions: ["read", "add_points"]
+        condition: "amount <= 100"
+      - resource: "rewards"
+        actions: ["read"]
+    attributes:
+      shift: "morning"
+      store_id: "store_001"
+
+  - id: "manager"
+    name: "Gerente"
+    description: "Gerente da loja com acesso administrativo"
+    roles:
+      - "staff"
+      - "manager"
+      - "operator"
+    permissions:
+      - resource: "*"
+        actions: ["read", "write", "delete"]
+        condition: "store_id==assigned_store"
+      - resource: "reports"
+        actions: ["read", "generate"]
+      - resource: "promotions"
+        actions: ["create", "read", "update", "delete"]
+    attributes:
+      store_id: "store_001"
+      access_level: "full"
+
+  - id: "admin"
+    name: "Administrador do Sistema"
+    description: "Administrador com acesso completo ao sistema"
+    roles:
+      - "admin"
+      - "manager"
+      - "staff"
+      - "operator"
+    permissions:
+      - resource: "*"
+        actions: ["read", "write", "delete", "execute"]
+    attributes:
+      scope: "global"
+
+# Modelo de dados
+data_model:
+  entities:
+    - name: "Customer"
+      description: "Cadastro de cliente"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+          description: "ID único do cliente"
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 100
+          description: "Nome completo do cliente"
+        - name: "email"
+          type: "string"
+          required: true
+          unique: true
+          description: "E-mail para contato"
+        - name: "phone"
+          type: "string"
+          required: true
+          unique: true
+          description: "Telefone/WhatsApp"
+        - name: "cpf"
+          type: "string"
+          required: false
+          unique: true
+          description: "CPF do cliente"
+        - name: "birth_date"
+          type: "datetime"
+          required: false
+          description: "Data de nascimento"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "tier"
+          type: "string"
+          required: true
+          default: "base"
+          description: "Nível no programa (base, silver, gold, platinum)"
+        - name: "total_points"
+          type: "int"
+          required: true
+          default: 0
+        - name: "lifetime_points"
+          type: "int"
+          required: true
+          default: 0
+      indexes:
+        - name: "idx_customer_email"
+          fields: ["email"]
+          unique: true
+        - name: "idx_customer_phone"
+          fields: ["phone"]
+          unique: true
+        - name: "idx_customer_tier"
+          fields: ["tier"]
+
+    - name: "LoyaltyAccount"
+      description: "Conta de fidelidade do cliente"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "customer_id"
+          type: "string"
+          required: true
+          unique: true
+          reference:
+            entity: "Customer"
+            field: "id"
+            on_delete: "cascade"
+        - name: "current_points"
+          type: "int"
+          required: true
+          default: 0
+        - name: "tier"
+          type: "string"
+          required: true
+          default: "base"
+        - name: "tier_progress"
+          type: "float"
+          required: true
+          default: 0.0
+          description: "Progresso para próximo nível (0-100%)"
+        - name: "last_activity"
+          type: "datetime"
+          required: true
+        - name: "expires_at"
+          type: "datetime"
+          required: false
+          description: "Data de expiração dos pontos"
+      indexes:
+        - name: "idx_account_customer"
+          fields: ["customer_id"]
+          unique: true
+        - name: "idx_account_tier"
+          fields: ["tier"]
+
+    - name: "Transaction"
+      description: "Transação de compra ou resgate"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "customer_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Customer"
+            field: "id"
+        - name: "store_id"
+          type: "string"
+          required: true
+        - name: "type"
+          type: "string"
+          required: true
+          description: "purchase, redemption, adjustment, expiration"
+        - name: "amount"
+          type: "float"
+          required: true
+          description: "Valor da transação em reais"
+        - name: "points_earned"
+          type: "int"
+          required: true
+          default: 0
+        - name: "points_redeemed"
+          type: "int"
+          required: true
+          default: 0
+        - name: "items"
+          type: "json"
+          required: false
+          description: "Lista de itens comprados"
+        - name: "processed_by"
+          type: "string"
+          required: true
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "notes"
+          type: "string"
+          required: false
+          max_length: 500
+      indexes:
+        - name: "idx_transaction_customer"
+          fields: ["customer_id"]
+        - name: "idx_transaction_store"
+          fields: ["store_id"]
+        - name: "idx_transaction_type"
+          fields: ["type"]
+        - name: "idx_transaction_date"
+          fields: ["created_at"]
+
+    - name: "Reward"
+      description: "Recompensa disponível para resgate"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 100
+        - name: "description"
+          type: "string"
+          required: true
+          max_length: 500
+        - name: "points_cost"
+          type: "int"
+          required: true
+        - name: "category"
+          type: "string"
+          required: true
+          description: "drink, food, discount, merchandise"
+        - name: "stock"
+          type: "int"
+          required: false
+          default: -1
+          description: "-1 significa ilimitado"
+        - name: "active"
+          type: "bool"
+          required: true
+          default: true
+        - name: "valid_from"
+          type: "datetime"
+          required: false
+        - name: "valid_until"
+          type: "datetime"
+          required: false
+        - name: "tier_restriction"
+          type: "string"
+          required: false
+          description: "Nível mínimo necessário (null = todos)"
+        - name: "image_url"
+          type: "string"
+          required: false
+      indexes:
+        - name: "idx_reward_category"
+          fields: ["category"]
+        - name: "idx_reward_active"
+          fields: ["active"]
+
+    - name: "Redemption"
+      description: "Registro de resgate de recompensa"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "customer_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Customer"
+            field: "id"
+        - name: "reward_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Reward"
+            field: "id"
+        - name: "points_used"
+          type: "int"
+          required: true
+        - name: "store_id"
+          type: "string"
+          required: true
+        - name: "redeemed_by"
+          type: "string"
+          required: true
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "redeemed_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "completed"
+          description: "pending, completed, cancelled"
+      indexes:
+        - name: "idx_redemption_customer"
+          fields: ["customer_id"]
+        - name: "idx_redemption_reward"
+          fields: ["reward_id"]
+
+    - name: "TierBenefit"
+      description: "Benefícios por nível de fidelidade"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "tier"
+          type: "string"
+          required: true
+          unique: true
+        - name: "points_multiplier"
+          type: "float"
+          required: true
+          default: 1.0
+        - name: "min_points"
+          type: "int"
+          required: true
+        - name: "benefits"
+          type: "json"
+          required: true
+          description: "Lista de benefícios em JSON"
+        - name: "badge_icon"
+          type: "string"
+          required: false
+
+  relations:
+    - name: "customer_has_account"
+      from: "Customer"
+      to: "LoyaltyAccount"
+      type: "one_to_one"
+    - name: "customer_makes_transactions"
+      from: "Customer"
+      to: "Transaction"
+      type: "one_to_many"
+    - name: "customer_redeems_rewards"
+      from: "Customer"
+      to: "Redemption"
+      type: "one_to_many"
+    - name: "reward_in_redemptions"
+      from: "Reward"
+      to: "Redemption"
+      type: "one_to_many"
+
+# Regras de negócio
+business_rules:
+  - id: "rule_points_on_purchase"
+    name: "Acumular pontos na compra"
+    description: "Clientes ganham 1 ponto a cada R$ 1,00 gasto"
+    trigger:
+      event: "create"
+      entities: ["Transaction"]
+      after: true
+    condition: "transaction.type == 'purchase'"
+    actions:
+      - type: "calculate"
+        target: "points_earned"
+        parameters:
+          formula: "amount * tier_multiplier"
+      - type: "update"
+        target: "LoyaltyAccount.current_points"
+        parameters:
+          operation: "add"
+          field: "points_earned"
+      - type: "update"
+        target: "LoyaltyAccount.lifetime_points"
+        parameters:
+          operation: "add"
+          field: "points_earned"
+    priority: 1
+    enabled: true
+
+  - id: "rule_tier_progression"
+    name: "Progressão de nível"
+    description: "Atualiza o tier do cliente baseado nos pontos acumulados"
+    trigger:
+      event: "update"
+      entities: ["LoyaltyAccount"]
+      after: true
+    condition: "check_tier_change_required"
+    actions:
+      - type: "execute"
+        script: |
+          if account.lifetime_points >= 5000 {
+            account.tier = "platinum"
+          } else if account.lifetime_points >= 2000 {
+            account.tier = "gold"
+          } else if account.lifetime_points >= 500 {
+            account.tier = "silver"
+          }
+          account.tier_progress = calculate_progress(account.lifetime_points)
+    priority: 2
+    enabled: true
+
+  - id: "rule_birthday_bonus"
+    name: "Bônus de aniversário"
+    description: "Concede pontos bônus no mês de aniversário"
+    trigger:
+      event: "create"
+      entities: ["Transaction"]
+      before: true
+    condition: "is_customer_birthday_month && transaction.type == 'purchase'"
+    actions:
+      - type: "calculate"
+        target: "bonus_points"
+        parameters:
+          formula: "50 * tier_multiplier"
+      - type: "notify"
+        target: "customer"
+        parameters:
+          message: "🎉 Parabéns! Você ganhou 50 pontos de bônus de aniversário!"
+    priority: 3
+    enabled: true
+
+  - id: "rule_validate_redemption"
+    name: "Validar resgate de recompensa"
+    description: "Verifica se cliente tem pontos suficientes antes de resgatar"
+    trigger:
+      event: "create"
+      entities: ["Redemption"]
+      before: true
+    condition: "true"
+    actions:
+      - type: "validate"
+        parameters:
+          expression: "account.current_points >= reward.points_cost"
+          error_message: "Saldo de pontos insuficiente para este resgate"
+      - type: "validate"
+        parameters:
+          expression: "reward.active == true"
+          error_message: "Esta recompensa não está mais disponível"
+      - type: "validate"
+        parameters:
+          expression: "reward.stock == -1 || reward.stock > 0"
+          error_message: "Recompensa esgotada"
+    priority: 10
+    enabled: true
+
+  - id: "rule_deduct_points_on_redemption"
+    name: "Debitar pontos no resgate"
+    description: "Remove os pontos da conta após resgate confirmado"
+    trigger:
+      event: "create"
+      entities: ["Redemption"]
+      after: true
+    condition: "redemption.status == 'completed'"
+    actions:
+      - type: "update"
+        target: "LoyaltyAccount.current_points"
+        parameters:
+          operation: "subtract"
+          field: "points_used"
+      - type: "update"
+        target: "Reward.stock"
+        parameters:
+          operation: "subtract"
+          value: 1
+          condition: "stock > 0"
+    priority: 11
+    enabled: true
+
+  - id: "rule_points_expiration"
+    name: "Expiração de pontos"
+    description: "Pontos expiram após 12 meses sem atividade"
+    trigger:
+      event: "scheduled"
+      entities: ["LoyaltyAccount"]
+    condition: "last_activity < now() - 365 days && current_points > 0"
+    actions:
+      - type: "execute"
+        script: |
+          expired_points = account.current_points
+          account.current_points = 0
+          create_transaction(customer_id, "expiration", 0, 0, expired_points)
+      - type: "notify"
+        target: "customer"
+        parameters:
+          message: "⚠️ Seus pontos expiraram devido à inatividade. Faça uma compra para reativar!"
+    priority: 20
+    enabled: true
+
+# Integrações
+integrations:
+  apis:
+    - name: "Loyalty API"
+      base_path: "/api/v1/loyalty"
+      version: "v1"
+      auth:
+        type: "jwt"
+        config:
+          secret_env: "JWT_SECRET"
+          expiry_hours: "24"
+      rate_limit:
+        requests_per_second: 100
+        burst_size: 200
+      endpoints:
+        - path: "/customers"
+          method: "POST"
+          description: "Cadastrar novo cliente"
+          handler: "customer.create"
+          input:
+            entity: "Customer"
+            fields: ["name", "email", "phone", "cpf", "birth_date"]
+          permissions:
+            - "staff:create_customer"
+        - path: "/customers/{id}"
+          method: "GET"
+          description: "Obter dados do cliente"
+          handler: "customer.get"
+          permissions:
+            - "customer:read_own"
+            - "staff:read_customer"
+        - path: "/customers/{id}/account"
+          method: "GET"
+          description: "Obter conta de fidelidade"
+          handler: "account.get"
+          permissions:
+            - "customer:read_own"
+            - "staff:read_account"
+        - path: "/customers/{id}/transactions"
+          method: "GET"
+          description: "Listar transações do cliente"
+          handler: "transaction.list"
+          permissions:
+            - "customer:read_own"
+            - "staff:read_transactions"
+        - path: "/transactions"
+          method: "POST"
+          description: "Registrar nova transação"
+          handler: "transaction.create"
+          input:
+            entity: "Transaction"
+          permissions:
+            - "staff:create_transaction"
+        - path: "/rewards"
+          method: "GET"
+          description: "Listar recompensas disponíveis"
+          handler: "reward.list"
+          permissions:
+            - "customer:read_rewards"
+            - "staff:read_rewards"
+        - path: "/rewards/{id}/redeem"
+          method: "POST"
+          description: "Resgatar recompensa"
+          handler: "reward.redeem"
+          permissions:
+            - "customer:redeem_reward"
+            - "staff:process_redemption"
+
+  channels:
+    - type: "telegram"
+      name: "Telegram Bot"
+      config:
+        token_env: "TELEGRAM_BOT_TOKEN"
+        webhook_enabled: "true"
+      agents:
+        - "loyalty-assistant"
+      enabled: true
+
+    - type: "whatsapp"
+      name: "WhatsApp Business"
+      config:
+        api_key_env: "WHATSAPP_API_KEY"
+        phone_number: "+5511999999999"
+      agents:
+        - "loyalty-assistant"
+      enabled: true
+
+    - type: "web"
+      name: "Web App"
+      config:
+        port: "3000"
+        static_dir: "./static"
+      agents:
+        - "loyalty-assistant"
+      enabled: true
+
+  mcps:
+    - name: "POS Integration"
+      server: "pos-mcp-server"
+      transport: "stdio"
+      config:
+        pos_vendor: "stone"
+        store_id: "store_001"
+      tools:
+        - "get_sale_data"
+        - "register_payment"
+        - "cancel_transaction"
+
+  webhooks:
+    - name: "Analytics Webhook"
+      url: "https://analytics.cafeteria.com/webhook"
+      method: "POST"
+      events:
+        - "transaction.created"
+        - "redemption.completed"
+        - "tier.changed"
+      headers:
+        Authorization: "Bearer ${ANALYTICS_TOKEN}"
+      retry:
+        max_retries: 3
+        delay_ms: 1000
+
+# Segurança
+security:
+  authentication:
+    methods:
+      - "jwt"
+      - "api_key"
+      - "oauth2_google"
+    session_timeout_minutes: 60
+    mfa_required: false
+    password_policy:
+      min_length: 8
+      require_uppercase: true
+      require_lowercase: true
+      require_numbers: true
+      require_special: false
+
+  authorization:
+    model: "rbac"
+    default_deny: true
+    role_hierarchy:
+      - role: "admin"
+        inherits: ["manager"]
+      - role: "manager"
+        inherits: ["staff"]
+      - role: "staff"
+        inherits: ["customer"]
+    context_conditions:
+      - name: "business_hours"
+        expression: "hour >= 6 && hour <= 23"
+        message: "Operações restritas fora do horário comercial"
+      - name: "same_store"
+        expression: "user.store_id == resource.store_id"
+        message: "Acesso permitido apenas para recursos da mesma loja"
+
+  data_protection:
+    encryption_at_rest: true
+    encryption_in_transit: true
+    sensitive_fields:
+      - entity: "Customer"
+        field: "cpf"
+        encryption: true
+        masking: true
+        mask_pattern: "***.**.***-**"
+      - entity: "Customer"
+        field: "phone"
+        encryption: true
+        masking: false
+      - entity: "Customer"
+        field: "email"
+        encryption: false
+        masking: false
+    data_retention:
+      default_days: 730
+      rules:
+        - entity: "Transaction"
+          days: 1825
+          action: "archive"
+        - entity: "Redemption"
+          days: 1825
+          action: "archive"
+
+  audit:
+    enabled: true
+    log_level: "info"
+    include_events:
+      - "login"
+      - "logout"
+      - "transaction.created"
+      - "redemption.completed"
+      - "tier.changed"
+      - "permission.denied"
+    retention_days: 365
+    storage_backend: "database"
+
+# Requisitos não funcionais
+non_functional:
+  performance:
+    max_response_time_ms: 200
+    max_concurrent_users: 1000
+    throughput_rps: 500
+
+  reliability:
+    availability_percent: 99.9
+    mttr_minutes: 30
+    mtbf_hours: 720
+
+  scalability:
+    auto_scaling: true
+    min_instances: 2
+    max_instances: 10
+    scaling_metrics:
+      - "cpu_utilization"
+      - "request_count"
+
+  compliance:
+    frameworks:
+      - "LGPD"
+      - "PCI-DSS"
+    data_residency: "BR"
+    privacy_policy_required: true
+    consent_management: true

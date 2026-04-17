@@ -1,0 +1,1166 @@
+# Manifesto do Sistema de Tickets para Estacionamento
+# AgentOS - PicoClaw
+
+metadata:
+  name: "parking-ticket-system"
+  version: "1.0.0"
+  description: "Sistema de gestão de tickets e controle de acesso para estacionamento"
+  author: "AgentOS Team"
+  created_at: "2025-01-15"
+  tags:
+    - parking
+    - ticketing
+    - access-control
+    - billing
+  labels:
+    industry: "services"
+    type: "ticketing-system"
+
+# Atores do sistema
+actors:
+  - id: "driver"
+    name: "Motorista"
+    description: "Usuário que estaciona o veículo"
+    roles:
+      - "customer"
+    permissions:
+      - resource: "own_tickets"
+        actions: ["read", "pay"]
+        condition: "owner==self"
+      - resource: "own_vehicles"
+        actions: ["read", "write"]
+        condition: "owner==self"
+      - resource: "parking_rates"
+        actions: ["read"]
+      - resource: "payment_methods"
+        actions: ["read", "create", "delete"]
+        condition: "owner==self"
+    attributes:
+      subscription_status: "none" # none, monthly, premium
+      preferred_payment: "credit_card"
+
+  - id: "attendant"
+    name: "Atendente"
+    description: "Funcionário que opera a entrada/saída e atende clientes"
+    roles:
+      - "operator"
+      - "staff"
+    permissions:
+      - resource: "tickets"
+        actions: ["create", "read", "update"]
+        condition: "shift_active==true"
+      - resource: "vehicles"
+        actions: ["read", "register"]
+      - resource: "payments"
+        actions: ["process", "read"]
+        condition: "amount <= 500"
+      - resource: "gates"
+        actions: ["open", "read"]
+      - resource: "reports"
+        actions: ["read"]
+        condition: "scope==shift"
+    attributes:
+      shift_id: "current_shift"
+      gate_access: ["gate_1", "gate_2"]
+
+  - id: "supervisor"
+    name: "Supervisor"
+    description: "Supervisor com acesso ampliado para gestão operacional"
+    roles:
+      - "supervisor"
+      - "operator"
+      - "staff"
+    permissions:
+      - resource: "tickets"
+        actions: ["read", "update", "void"]
+      - resource: "payments"
+        actions: ["read", "process", "refund"]
+        condition: "amount <= 2000"
+      - resource: "discounts"
+        actions: ["apply", "read"]
+        condition: "discount_percent <= 50"
+      - resource: "shifts"
+        actions: ["read", "close", "adjust"]
+      - resource: "customers"
+        actions: ["read", "create"]
+      - resource: "subscriptions"
+        actions: ["read", "create", "update"]
+    attributes:
+      max_discount: 50
+      max_refund: 2000
+
+  - id: "manager"
+    name: "Gerente"
+    description: "Gerente com acesso administrativo completo"
+    roles:
+      - "manager"
+      - "supervisor"
+      - "operator"
+      - "staff"
+    permissions:
+      - resource: "*"
+        actions: ["read", "write", "delete"]
+        condition: "facility==assigned_facility"
+      - resource: "rates"
+        actions: ["create", "read", "update", "delete"]
+      - resource: "reports"
+        actions: ["read", "generate", "export"]
+      - resource: "staff"
+        actions: ["read", "create", "update", "delete"]
+      - resource: "configurations"
+        actions: ["read", "write"]
+    attributes:
+      facility_id: "main_parking"
+      access_level: "full"
+
+  - id: "admin"
+    name: "Administrador do Sistema"
+    description: "Administrador com acesso global"
+    roles:
+      - "admin"
+      - "manager"
+      - "supervisor"
+      - "operator"
+      - "staff"
+    permissions:
+      - resource: "*"
+        actions: ["read", "write", "delete", "execute"]
+    attributes:
+      scope: "global"
+
+# Modelo de dados
+data_model:
+  entities:
+    - name: "Customer"
+      description: "Cadastro de cliente frequentador"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 100
+        - name: "email"
+          type: "string"
+          required: false
+          unique: true
+        - name: "phone"
+          type: "string"
+          required: true
+          unique: true
+        - name: "cpf_cnpj"
+          type: "string"
+          required: false
+          unique: true
+        - name: "license_plate"
+          type: "string"
+          required: false
+          description: "Placa principal do veículo"
+        - name: "subscription_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Subscription"
+            field: "id"
+        - name: "created_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "active"
+          description: "active, suspended, blocked"
+        - name: "credit_balance"
+          type: "float"
+          required: true
+          default: 0.0
+      indexes:
+        - name: "idx_customer_phone"
+          fields: ["phone"]
+          unique: true
+        - name: "idx_customer_license"
+          fields: ["license_plate"]
+
+    - name: "Vehicle"
+      description: "Cadastro de veículo"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "customer_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Customer"
+            field: "id"
+            on_delete: "set_null"
+        - name: "license_plate"
+          type: "string"
+          required: true
+          unique: true
+        - name: "brand"
+          type: "string"
+          required: false
+          max_length: 50
+        - name: "model"
+          type: "string"
+          required: false
+          max_length: 50
+        - name: "color"
+          type: "string"
+          required: false
+          max_length: 30
+        - name: "vehicle_type"
+          type: "string"
+          required: true
+          default: "car"
+          description: "car, motorcycle, truck, van"
+        - name: "size_category"
+          type: "string"
+          required: true
+          default: "standard"
+          description: "compact, standard, large, oversized"
+        - name: "is_primary"
+          type: "bool"
+          required: true
+          default: false
+        - name: "notes"
+          type: "string"
+          required: false
+          max_length: 200
+      indexes:
+        - name: "idx_vehicle_plate"
+          fields: ["license_plate"]
+          unique: true
+        - name: "idx_vehicle_customer"
+          fields: ["customer_id"]
+
+    - name: "Ticket"
+      description: "Ticket de estacionamento"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "barcode"
+          type: "string"
+          required: true
+          unique: true
+          description: "Código de barras do ticket"
+        - name: "qr_code"
+          type: "string"
+          required: false
+          description: "QR code para pagamento"
+        - name: "license_plate"
+          type: "string"
+          required: true
+        - name: "customer_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Customer"
+            field: "id"
+        - name: "entry_gate_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Gate"
+            field: "id"
+        - name: "entry_time"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "entry_attendant_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "entry_photo_url"
+          type: "string"
+          required: false
+          description: "Foto do veículo na entrada"
+        - name: "exit_gate_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Gate"
+            field: "id"
+        - name: "exit_time"
+          type: "datetime"
+          required: false
+        - name: "exit_attendant_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "exit_photo_url"
+          type: "string"
+          required: false
+          description: "Foto do veículo na saída"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "active"
+          description: "active, paid, exited, void, lost"
+        - name: "parking_spot"
+          type: "string"
+          required: false
+          description: "Vaga designada (opcional)"
+        - name: "vehicle_type"
+          type: "string"
+          required: true
+          default: "car"
+        - name: "notes"
+          type: "string"
+          required: false
+          max_length: 500
+      indexes:
+        - name: "idx_ticket_barcode"
+          fields: ["barcode"]
+          unique: true
+        - name: "idx_ticket_plate"
+          fields: ["license_plate"]
+        - name: "idx_ticket_status"
+          fields: ["status"]
+        - name: "idx_ticket_entry_time"
+          fields: ["entry_time"]
+
+    - name: "ParkingRate"
+      description: "Tabela de preços e tarifas"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 100
+        - name: "vehicle_type"
+          type: "string"
+          required: true
+          description: "car, motorcycle, truck, van"
+        - name: "rate_type"
+          type: "string"
+          required: true
+          description: "hourly, flat, subscription, event"
+        - name: "base_price"
+          type: "float"
+          required: true
+        - name: "additional_hour_price"
+          type: "float"
+          required: false
+        - name: "max_daily_price"
+          type: "float"
+          required: false
+        - name: "grace_period_minutes"
+          type: "int"
+          required: true
+          default: 15
+          description: "Período de cortesia"
+        - name: "free_after_hours"
+          type: "int"
+          required: false
+          description: "Horas após as quais não cobra (ex: pernoite)"
+        - name: "valid_from"
+          type: "datetime"
+          required: false
+        - name: "valid_until"
+          type: "datetime"
+          required: false
+        - name: "applicable_days"
+          type: "json"
+          required: false
+          description: "Dias da semana aplicáveis [0-6]"
+        - name: "applicable_hours_start"
+          type: "int"
+          required: false
+          description: "Hora inicial de aplicação (0-23)"
+        - name: "applicable_hours_end"
+          type: "int"
+          required: false
+          description: "Hora final de aplicação (0-23)"
+        - name: "active"
+          type: "bool"
+          required: true
+          default: true
+      indexes:
+        - name: "idx_rate_vehicle_type"
+          fields: ["vehicle_type"]
+        - name: "idx_rate_active"
+          fields: ["active"]
+
+    - name: "Payment"
+      description: "Registro de pagamento"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "ticket_id"
+          type: "string"
+          required: true
+          unique: true
+          reference:
+            entity: "Ticket"
+            field: "id"
+        - name: "amount"
+          type: "float"
+          required: true
+        - name: "discount_amount"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "final_amount"
+          type: "float"
+          required: true
+        - name: "payment_method"
+          type: "string"
+          required: true
+          description: "cash, credit_card, debit_card, pix, subscription, credit"
+        - name: "payment_provider"
+          type: "string"
+          required: false
+          description: "stone, pagseguro, mercado_pago, etc"
+        - name: "transaction_id"
+          type: "string"
+          required: false
+          description: "ID da transação no provedor"
+        - name: "authorization_code"
+          type: "string"
+          required: false
+        - name: "processed_by"
+          type: "string"
+          required: true
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "processed_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "pending"
+          description: "pending, approved, declined, refunded, cancelled"
+        - name: "receipt_url"
+          type: "string"
+          required: false
+        - name: "notes"
+          type: "string"
+          required: false
+          max_length: 500
+      indexes:
+        - name: "idx_payment_ticket"
+          fields: ["ticket_id"]
+          unique: true
+        - name: "idx_payment_status"
+          fields: ["status"]
+        - name: "idx_payment_date"
+          fields: ["processed_at"]
+
+    - name: "Subscription"
+      description: "Plano de assinatura mensal"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "customer_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Customer"
+            field: "id"
+        - name: "plan_name"
+          type: "string"
+          required: true
+          description: "basic, premium, unlimited"
+        - name: "vehicle_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Vehicle"
+            field: "id"
+        - name: "price"
+          type: "float"
+          required: true
+        - name: "billing_cycle"
+          type: "string"
+          required: true
+          default: "monthly"
+        - name: "start_date"
+          type: "datetime"
+          required: true
+        - name: "end_date"
+          type: "datetime"
+          required: false
+        - name: "auto_renew"
+          type: "bool"
+          required: true
+          default: true
+        - name: "access_hours_start"
+          type: "int"
+          required: false
+          description: "Hora inicial de acesso (0-23), null = 24h"
+        - name: "access_hours_end"
+          type: "int"
+          required: false
+          description: "Hora final de acesso (0-23), null = 24h"
+        - name: "valid_weekdays"
+          type: "json"
+          required: false
+          description: "Dias válidos [0-6], null = todos"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "active"
+          description: "active, expired, cancelled, suspended"
+        - name: "last_payment_date"
+          type: "datetime"
+          required: false
+        - name: "next_billing_date"
+          type: "datetime"
+          required: false
+      indexes:
+        - name: "idx_subscription_customer"
+          fields: ["customer_id"]
+        - name: "idx_subscription_vehicle"
+          fields: ["vehicle_id"]
+        - name: "idx_subscription_status"
+          fields: ["status"]
+
+    - name: "Gate"
+      description: "Portão de acesso"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 50
+        - name: "type"
+          type: "string"
+          required: true
+          description: "entry, exit, both"
+        - name: "status"
+          type: "string"
+          required: true
+          default: "online"
+          description: "online, offline, maintenance, blocked"
+        - name: "hardware_id"
+          type: "string"
+          required: false
+          description: "ID do controlador hardware"
+        - name: "camera_url"
+          type: "string"
+          required: false
+        - name: "barrier_status"
+          type: "string"
+          required: true
+          default: "closed"
+          description: "open, closed, moving"
+        - name: "last_maintenance"
+          type: "datetime"
+          required: false
+        - name: "location"
+          type: "string"
+          required: false
+      indexes:
+        - name: "idx_gate_type"
+          fields: ["type"]
+        - name: "idx_gate_status"
+          fields: ["status"]
+
+    - name: "Shift"
+      description: "Turno de trabalho"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "attendant_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "started_at"
+          type: "datetime"
+          required: true
+        - name: "ended_at"
+          type: "datetime"
+          required: false
+        - name: "expected_end"
+          type: "datetime"
+          required: true
+        - name: "starting_cash"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "closing_cash"
+          type: "float"
+          required: false
+        - name: "total_cash_payments"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "total_card_payments"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "total_pix_payments"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "total_discounts"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "total_refunds"
+          type: "float"
+          required: true
+          default: 0.0
+        - name: "status"
+          type: "string"
+          required: true
+          default: "open"
+          description: "open, closed, adjusted"
+        - name: "notes"
+          type: "string"
+          required: false
+          max_length: 1000
+        - name: "closed_by_id"
+          type: "string"
+          required: false
+          reference:
+            entity: "Staff"
+            field: "id"
+      indexes:
+        - name: "idx_shift_attendant"
+          fields: ["attendant_id"]
+        - name: "idx_shift_status"
+          fields: ["status"]
+        - name: "idx_shift_started"
+          fields: ["started_at"]
+
+    - name: "Discount"
+      description: "Registro de desconto aplicado"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "ticket_id"
+          type: "string"
+          required: true
+          reference:
+            entity: "Ticket"
+            field: "id"
+        - name: "amount"
+          type: "float"
+          required: true
+        - name: "percent"
+          type: "float"
+          required: false
+        - name: "reason"
+          type: "string"
+          required: true
+          description: "validation, partnership, courtesy, promotion, error_correction"
+        - name: "reason_detail"
+          type: "string"
+          required: false
+          max_length: 200
+        - name: "authorized_by"
+          type: "string"
+          required: true
+          reference:
+            entity: "Staff"
+            field: "id"
+        - name: "applied_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+      indexes:
+        - name: "idx_discount_ticket"
+          fields: ["ticket_id"]
+        - name: "idx_discount_reason"
+          fields: ["reason"]
+
+  relations:
+    - name: "customer_has_vehicles"
+      from: "Customer"
+      to: "Vehicle"
+      type: "one_to_many"
+    - name: "customer_has_tickets"
+      from: "Customer"
+      to: "Ticket"
+      type: "one_to_many"
+    - name: "customer_has_subscription"
+      from: "Customer"
+      to: "Subscription"
+      type: "one_to_one"
+    - name: "vehicle_in_tickets"
+      from: "Vehicle"
+      to: "Ticket"
+      type: "one_to_many"
+    - name: "ticket_has_payment"
+      from: "Ticket"
+      to: "Payment"
+      type: "one_to_one"
+    - name: "ticket_entry_gate"
+      from: "Gate"
+      to: "Ticket"
+      type: "one_to_many"
+    - name: "ticket_exit_gate"
+      from: "Gate"
+      to: "Ticket"
+      type: "one_to_many"
+    - name: "shift_by_attendant"
+      from: "Staff"
+      to: "Shift"
+      type: "one_to_many"
+
+# Regras de negócio
+business_rules:
+  - id: "rule_calculate_parking_fee"
+    name: "Calcular tarifa de estacionamento"
+    description: "Calcula o valor a pagar baseado no tempo e tabela de preços"
+    trigger:
+      event: "update"
+      entities: ["Ticket"]
+      before: true
+    condition: "ticket.exit_time != null && ticket.status == 'active'"
+    actions:
+      - type: "calculate"
+        target: "fee"
+        parameters:
+          formula: |
+            duration_minutes = diff_minutes(ticket.entry_time, ticket.exit_time)
+            rate = get_applicable_rate(ticket.vehicle_type, ticket.entry_time)
+            
+            if duration_minutes <= rate.grace_period_minutes:
+              return 0
+            
+            if rate.rate_type == 'flat':
+              return rate.base_price
+            
+            hours = ceil(duration_minutes / 60)
+            fee = rate.base_price
+            
+            if hours > 1 && rate.additional_hour_price:
+              fee += (hours - 1) * rate.additional_hour_price
+            
+            if rate.max_daily_price && fee > rate.max_daily_price:
+              fee = rate.max_daily_price
+            
+            return fee
+      - type: "create"
+        target: "Payment"
+        parameters:
+          amount: "calculated_fee"
+          status: "pending"
+    priority: 1
+    enabled: true
+
+  - id: "rule_validate_entry"
+    name: "Validar entrada de veículo"
+    description: "Verifica condições antes de permitir entrada"
+    trigger:
+      event: "create"
+      entities: ["Ticket"]
+      before: true
+    condition: "true"
+    actions:
+      - type: "validate"
+        parameters:
+          expression: "get_active_ticket_count(license_plate) == 0"
+          error_message: "Veículo já está estacionado no local"
+      - type: "validate"
+        parameters:
+          expression: "gate.status == 'online' && gate.type in ['entry', 'both']"
+          error_message: "Portão indisponível para entrada"
+      - type: "execute"
+        script: |
+          if customer.subscription and customer.subscription.status == 'active':
+            validate_subscription_access(customer.subscription, current_time)
+    priority: 10
+    enabled: true
+
+  - id: "rule_process_payment"
+    name: "Processar pagamento"
+    description: "Processa pagamento e atualiza status do ticket"
+    trigger:
+      event: "create"
+      entities: ["Payment"]
+      after: true
+    condition: "payment.status == 'approved'"
+    actions:
+      - type: "update"
+        target: "Ticket.status"
+        parameters:
+          value: "paid"
+      - type: "update"
+        target: "Shift.total_*_payments"
+        parameters:
+          operation: "add"
+          field: "payment.final_amount"
+          category: "payment.payment_method"
+      - type: "generate"
+        target: "receipt"
+        parameters:
+          template: "parking_receipt"
+          data: "payment"
+    priority: 5
+    enabled: true
+
+  - id: "rule_authorize_exit"
+    name: "Autorizar saída"
+    description: "Libera saída apenas se ticket estiver pago ou for assinante"
+    trigger:
+      event: "update"
+      entities: ["Ticket"]
+      before: true
+    condition: "ticket.exit_time != null"
+    actions:
+      - type: "validate"
+        parameters:
+          expression: "ticket.status in ['paid', 'subscription'] || payment.status == 'approved'"
+          error_message: "Pagamento não confirmado. Impossível liberar saída."
+      - type: "execute"
+        script: |
+          gate = get_gate(ticket.exit_gate_id)
+          open_barrier(gate)
+          capture_photo(gate.camera_url, "exit")
+    priority: 6
+    enabled: true
+
+  - id: "rule_subscription_billing"
+    name: "Cobrança automática de assinatura"
+    description: "Gera cobrança recorrente para assinaturas"
+    trigger:
+      event: "scheduled"
+      entities: ["Subscription"]
+    condition: "subscription.next_billing_date <= now() && subscription.auto_renew == true"
+    actions:
+      - type: "execute"
+        script: |
+          charge = create_charge(subscription.customer_id, subscription.price)
+          result = process_payment(charge, subscription.customer.preferred_payment_method)
+          
+          if result.approved:
+            subscription.last_payment_date = now()
+            subscription.next_billing_date = add_months(subscription.next_billing_date, 1)
+            send_receipt(subscription.customer.email, charge)
+          else:
+            subscription.status = "suspended"
+            notify_customer(subscription.customer_id, "Falha na cobrança da assinatura")
+    priority: 20
+    enabled: true
+
+  - id: "rule_lost_ticket"
+    name: "Tratamento de ticket perdido"
+    description: "Aplica taxa especial para ticket perdido"
+    trigger:
+      event: "update"
+      entities: ["Ticket"]
+      before: true
+    condition: "ticket.status == 'lost'"
+    actions:
+      - type: "validate"
+        parameters:
+          expression: "has_supervisor_authorization()"
+          error_message: "Necessária autorização de supervisor para ticket perdido"
+      - type: "calculate"
+        target: "fee"
+        parameters:
+          formula: "get_lost_ticket_fee(ticket.vehicle_type)"
+      - type: "notify"
+        target: "supervisor"
+        parameters:
+          message: "Taxa de ticket perdido aplicada: ${fee}"
+    priority: 15
+    enabled: true
+
+  - id: "rule_shift_closure"
+    name: "Fechamento de turno"
+    description: "Valida e fecha turno de atendimento"
+    trigger:
+      event: "update"
+      entities: ["Shift"]
+      before: true
+    condition: "shift.status == 'closing'"
+    actions:
+      - type: "validate"
+        parameters:
+          expression: "count_open_tickets(shift.attendant_id) == 0"
+          error_message: "Existem tickets em aberto neste turno"
+      - type: "calculate"
+        target: "expected_cash"
+        parameters:
+          formula: "shift.starting_cash + shift.total_cash_payments - shift.total_refunds"
+      - type: "validate"
+        parameters:
+          expression: "abs(shift.closing_cash - expected_cash) <= 10"
+          error_message: "Divergência de caixa superior a R$ 10,00"
+      - type: "update"
+        target: "Shift.status"
+        parameters:
+          value: "closed"
+          ended_at: "now()"
+    priority: 25
+    enabled: true
+
+# Integrações
+integrations:
+  apis:
+    - name: "Parking API"
+      base_path: "/api/v1/parking"
+      version: "v1"
+      auth:
+        type: "jwt"
+        config:
+          secret_env: "JWT_SECRET"
+          expiry_hours: "12"
+      rate_limit:
+        requests_per_second: 50
+        burst_size: 100
+      endpoints:
+        - path: "/tickets"
+          method: "POST"
+          description: "Criar novo ticket (entrada)"
+          handler: "ticket.create"
+          input:
+            entity: "Ticket"
+            fields: ["license_plate", "vehicle_type", "entry_gate_id"]
+          permissions:
+            - "operator:create_ticket"
+        - path: "/tickets/{id}/exit"
+          method: "PUT"
+          description: "Registrar saída"
+          handler: "ticket.exit"
+          permissions:
+            - "operator:process_exit"
+        - path: "/tickets/{id}/payment"
+          method: "POST"
+          description: "Processar pagamento"
+          handler: "payment.process"
+          permissions:
+            - "operator:process_payment"
+            - "customer:pay_own_ticket"
+        - path: "/rates"
+          method: "GET"
+          description: "Consultar tarifas"
+          handler: "rates.list"
+          permissions:
+            - "public:read"
+        - path: "/subscriptions"
+          method: "POST"
+          description: "Criar assinatura"
+          handler: "subscription.create"
+          permissions:
+            - "staff:create_subscription"
+        - path: "/gates/{id}/control"
+          method: "POST"
+          description: "Controlar portão"
+          handler: "gate.control"
+          permissions:
+            - "operator:control_gate"
+
+  channels:
+    - type: "web"
+      name: "Painel Web"
+      config:
+        port: "3000"
+        static_dir: "./static"
+      agents:
+        - "parking-assistant"
+      enabled: true
+
+    - type: "telegram"
+      name: "Telegram Notifications"
+      config:
+        token_env: "TELEGRAM_BOT_TOKEN"
+      agents:
+        - "parking-notifier"
+      enabled: true
+
+  mcps:
+    - name: "Hardware Controller MCP"
+      server: "hardware-mcp-server"
+      transport: "stdio"
+      config:
+        controller_type: "faac"
+        serial_port: "/dev/ttyUSB0"
+      tools:
+        - "open_barrier"
+        - "close_barrier"
+        - "get_barrier_status"
+        - "capture_photo"
+        - "read_rfid"
+
+    - name: "Payment Gateway MCP"
+      server: "payment-mcp-server"
+      transport: "sse"
+      config:
+        provider: "stone"
+        api_key_env: "STONE_API_KEY"
+        store_id: "parking_001"
+      tools:
+        - "process_card_payment"
+        - "process_pix"
+        - "refund_payment"
+        - "get_payment_status"
+
+  webhooks:
+    - name: "Accounting Webhook"
+      url: "https://accounting.parking.com/webhook"
+      method: "POST"
+      events:
+        - "payment.completed"
+        - "shift.closed"
+        - "subscription.renewed"
+      headers:
+        Authorization: "Bearer ${ACCOUNTING_TOKEN}"
+      retry:
+        max_retries: 3
+        delay_ms: 2000
+
+    - name: "SMS Notifications"
+      url: "https://sms.provider.com/api/send"
+      method: "POST"
+      events:
+        - "ticket.created"
+        - "payment.completed"
+        - "subscription.expiring_soon"
+      headers:
+        Authorization: "Bearer ${SMS_API_KEY}"
+      retry:
+        max_retries: 2
+        delay_ms: 1000
+
+# Segurança
+security:
+  authentication:
+    methods:
+      - "jwt"
+      - "api_key"
+      - "rfid_badge"
+    session_timeout_minutes: 480
+    mfa_required: false
+    password_policy:
+      min_length: 8
+      require_uppercase: true
+      require_lowercase: true
+      require_numbers: true
+      require_special: false
+
+  authorization:
+    model: "rbac"
+    default_deny: true
+    role_hierarchy:
+      - role: "admin"
+        inherits: ["manager"]
+      - role: "manager"
+        inherits: ["supervisor"]
+      - role: "supervisor"
+        inherits: ["operator"]
+      - role: "operator"
+        inherits: ["staff"]
+    context_conditions:
+      - name: "shift_active"
+        expression: "user.shift.status == 'open'"
+        message: "Operações permitidas apenas durante turno ativo"
+      - name: "same_facility"
+        expression: "user.facility_id == resource.facility_id"
+        message: "Acesso permitido apenas para recursos da mesma unidade"
+      - name: "within_authority"
+        expression: "action_amount <= user.max_authority_amount"
+        message: "Valor excede sua autoridade. Solicite aprovação de supervisor."
+
+  data_protection:
+    encryption_at_rest: true
+    encryption_in_transit: true
+    sensitive_fields:
+      - entity: "Customer"
+        field: "cpf_cnpj"
+        encryption: true
+        masking: true
+        mask_pattern: "***.***.***-**"
+      - entity: "Customer"
+        field: "phone"
+        encryption: true
+        masking: true
+        mask_pattern: "** *****.**"
+      - entity: "Payment"
+        field: "transaction_id"
+        encryption: true
+        masking: false
+    data_retention:
+      default_days: 365
+      rules:
+        - entity: "Ticket"
+          days: 730
+          action: "archive"
+        - entity: "Payment"
+          days: 1825
+          action: "archive"
+        - entity: "Shift"
+          days: 1825
+          action: "archive"
+
+  audit:
+    enabled: true
+    log_level: "info"
+    include_events:
+      - "login"
+      - "logout"
+      - "ticket.created"
+      - "ticket.exit"
+      - "payment.processed"
+      - "gate.opened"
+      - "gate.closed"
+      - "discount.applied"
+      - "shift.opened"
+      - "shift.closed"
+      - "permission.denied"
+      - "barrier.override"
+    retention_days: 730
+    storage_backend: "database"
+
+# Requisitos não funcionais
+non_functional:
+  performance:
+    max_response_time_ms: 500
+    max_concurrent_users: 200
+    throughput_rps: 100
+
+  reliability:
+    availability_percent: 99.95
+    mttr_minutes: 15
+    mtbf_hours: 2160
+
+  scalability:
+    auto_scaling: false
+    min_instances: 2
+    max_instances: 4
+    scaling_metrics:
+      - "cpu_utilization"
+      - "active_tickets"
+
+  compliance:
+    frameworks:
+      - "LGPD"
+      - "PCI-DSS"
+    data_residency: "BR"
+    privacy_policy_required: true
+    consent_management: false
