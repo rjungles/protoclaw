@@ -17,7 +17,7 @@ venv/
 .venv/
 .env
 .env.local
-.env.*
+*.env.*
 
 # Build directories
 dist/
@@ -31,13 +31,15 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-*.so
-*.egg-info/
-.eggs/
-.mypy_cache/
+env/
+venv/
+.venv/
+.env
+.env.local
+.env.*
 .pytest_cache/
+.mypy_cache/
 .coverage
-coverage/
 htmlcov/
 
 # Go specific

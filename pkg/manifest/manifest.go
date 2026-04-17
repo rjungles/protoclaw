@@ -48,12 +48,12 @@ type Metadata struct {
 
 // Actor define um tipo de usuário ou entidade do sistema
 type Actor struct {
-	ID          string            `yaml:"id" json:"id"`
-	Name        string            `yaml:"name" json:"name"`
-	Description string            `yaml:"description" json:"description"`
-	Roles       []string          `yaml:"roles" json:"roles"`
-	Permissions []Permission      `yaml:"permissions" json:"permissions"`
-	Attributes  map[string]string `yaml:"attributes,omitempty" json:"attributes,omitempty"`
+	ID          string                 `yaml:"id" json:"id"`
+	Name        string                 `yaml:"name" json:"name"`
+	Description string                 `yaml:"description" json:"description"`
+	Roles       []string               `yaml:"roles" json:"roles"`
+	Permissions []Permission           `yaml:"permissions" json:"permissions"`
+	Attributes  map[string]interface{} `yaml:"attributes,omitempty" json:"attributes,omitempty"`
 }
 
 // Permission define uma permissão específica
