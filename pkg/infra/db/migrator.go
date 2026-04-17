@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +86,7 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 		return fmt.Errorf("falha ao gerar mudanças de schema: %w", err)
 	}
 
+	changes = SortChanges(changes)
 	for _, change := range changes {
 		if err := m.applyChange(ctx, change); err != nil {
 			return fmt.Errorf("falha ao aplicar mudança %s: %w", change.Type, err)
@@ -182,29 +184,44 @@ func (m *Migrator) tableExists(name string) bool {
 	return err == nil && count > 0
 }
 
+func (m *Migrator) indexExists(name string) bool {
+	query := "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?"
+	var count int
+	err := m.db.QueryRow(query, name).Scan(&count)
+	return err == nil && count > 0
+}
+
 // generateCreateTable gera SQL para criar uma tabela
 func (m *Migrator) generateCreateTable(entity manifest.Entity) (SchemaChange, error) {
 	tableName := m.formatTableName(entity.Name)
-	
+
 	var columns []string
-	
-	// Adicionar ID padrão
-	columns = append(columns, "id INTEGER PRIMARY KEY AUTOINCREMENT")
-	
-	// Adicionar campos definidos
+	var tableConstraints []string
+
+	pkCol := m.detectPrimaryKeyColumn(entity)
+
 	for _, field := range entity.Fields {
-		colDef, err := m.fieldToColumn(field)
+		colDef, err := m.fieldToColumn(entity, field, pkCol)
 		if err != nil {
 			return SchemaChange{}, err
 		}
 		columns = append(columns, colDef)
 	}
 
-	// Adicionar timestamps padrão
-	columns = append(columns, "created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-	columns = append(columns, "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+	for _, c := range entity.Constraints {
+		sql, err := m.constraintToSQL(entity, c)
+		if err != nil {
+			return SchemaChange{}, err
+		}
+		if sql != "" {
+			tableConstraints = append(tableConstraints, sql)
+		}
+	}
 
-	sql := fmt.Sprintf("CREATE TABLE %s (%s)", tableName, strings.Join(columns, ", "))
+	defs := make([]string, 0, len(columns)+len(tableConstraints))
+	defs = append(defs, columns...)
+	defs = append(defs, tableConstraints...)
+	sql := fmt.Sprintf("CREATE TABLE %s (%s)", tableName, strings.Join(defs, ", "))
 
 	return SchemaChange{
 		Type:       "CREATE_TABLE",
@@ -215,9 +232,9 @@ func (m *Migrator) generateCreateTable(entity manifest.Entity) (SchemaChange, er
 }
 
 // fieldToColumn converte campo do manifesto para definição de coluna SQL
-func (m *Migrator) fieldToColumn(field manifest.Field) (string, error) {
+func (m *Migrator) fieldToColumn(entity manifest.Entity, field manifest.Field, pkCol string) (string, error) {
 	colName := m.formatColumnName(field.Name)
-	colType, err := m.mapFieldType(field.Type)
+	colType, err := m.mapFieldType(field)
 	if err != nil {
 		return "", err
 	}
@@ -230,13 +247,34 @@ func (m *Migrator) fieldToColumn(field manifest.Field) (string, error) {
 		constraints += " UNIQUE"
 	}
 
+	if colName == pkCol {
+		constraints += " PRIMARY KEY"
+	}
+
+	if field.Default != nil {
+		lit, ok := sqlLiteral(field.Default)
+		if !ok {
+			return "", fmt.Errorf("default inválido para %s.%s", entity.Name, field.Name)
+		}
+		constraints += " DEFAULT " + lit
+	}
+
+	if field.Reference != nil {
+		refEntity := m.formatTableName(field.Reference.Entity)
+		refField := m.formatColumnName(field.Reference.Field)
+		constraints += fmt.Sprintf(" REFERENCES %s(%s)%s", refEntity, refField, onDeleteClause(field.Reference.OnDelete))
+	}
+
 	return fmt.Sprintf("%s %s%s", colName, colType, constraints), nil
 }
 
 // mapFieldType mapeia tipos do manifesto para tipos SQL
-func (m *Migrator) mapFieldType(fieldType string) (string, error) {
-	switch strings.ToLower(fieldType) {
+func (m *Migrator) mapFieldType(field manifest.Field) (string, error) {
+	switch strings.ToLower(field.Type) {
 	case "string", "text":
+		if field.MaxLength != nil && *field.MaxLength > 0 {
+			return fmt.Sprintf("VARCHAR(%d)", *field.MaxLength), nil
+		}
 		return "TEXT", nil
 	case "integer", "int":
 		return "INTEGER", nil
@@ -248,8 +286,17 @@ func (m *Migrator) mapFieldType(fieldType string) (string, error) {
 		return "DATETIME", nil
 	case "json":
 		return "JSON", nil
+	case "reference":
+		if field.Reference == nil {
+			return "TEXT", nil
+		}
+		refField, ok := m.findField(field.Reference.Entity, field.Reference.Field)
+		if !ok {
+			return "TEXT", nil
+		}
+		return m.mapFieldType(refField)
 	default:
-		return "TEXT", nil // Default para TEXT
+		return "TEXT", nil
 	}
 }
 
@@ -267,15 +314,17 @@ func (m *Migrator) generateAlterTable(entity manifest.Entity, tableName string) 
 		columnSet[col] = true
 	}
 
+	pkCol := m.detectPrimaryKeyColumn(entity)
+
 	// Adicionar novas colunas
 	for _, field := range entity.Fields {
 		colName := m.formatColumnName(field.Name)
 		if !columnSet[colName] {
-			colDef, err := m.fieldToColumn(field)
+			colDef, err := m.fieldToColumn(entity, field, pkCol)
 			if err != nil {
 				return nil, err
 			}
-			
+
 			sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", tableName, colDef)
 			changes = append(changes, SchemaChange{
 				Type:       "ADD_COLUMN",
@@ -308,7 +357,7 @@ func (m *Migrator) getTableColumns(tableName string) ([]string, error) {
 		var notnull int
 		var dflt interface{}
 		var pk int
-		
+
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
 			return nil, err
 		}
@@ -328,13 +377,20 @@ func (m *Migrator) generateIndexes(entity manifest.Entity, tableName string) []S
 		if idxName == "" {
 			idxName = fmt.Sprintf("idx_%s_%s", tableName, strings.Join(idx.Fields, "_"))
 		}
-		
+		if m.indexExists(idxName) {
+			continue
+		}
+
 		fields := make([]string, len(idx.Fields))
 		for i, f := range idx.Fields {
 			fields[i] = m.formatColumnName(f)
 		}
-		
-		sql := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", idxName, tableName, strings.Join(fields, ", "))
+
+		create := "CREATE INDEX"
+		if idx.Unique {
+			create = "CREATE UNIQUE INDEX"
+		}
+		sql := fmt.Sprintf("%s IF NOT EXISTS %s ON %s (%s)", create, idxName, tableName, strings.Join(fields, ", "))
 		changes = append(changes, SchemaChange{
 			Type:       "CREATE_INDEX",
 			Table:      tableName,
@@ -438,12 +494,12 @@ func (m *Migrator) recordMigration(record MigrationRecord) error {
 
 // formatTableName formata nome de tabela para padrão snake_case
 func (m *Migrator) formatTableName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "_"))
+	return toSnakeCase(name)
 }
 
 // formatColumnName formata nome de coluna para padrão snake_case
 func (m *Migrator) formatColumnName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "_"))
+	return toSnakeCase(name)
 }
 
 // GetMigrationLog retorna log de migrações aplicadas
@@ -476,7 +532,7 @@ func (m *Migrator) Rollback(ctx context.Context) error {
 	}
 
 	last := m.migrationLog[len(m.migrationLog)-1]
-	
+
 	// Implementação básica - em produção seria necessário mapear rollback de cada operação
 	return fmt.Errorf("rollback não implementado para migração: %s", last.Description)
 }
@@ -503,4 +559,182 @@ func SortChanges(changes []SchemaChange) []SchemaChange {
 		return order[changes[i].Type] < order[changes[j].Type]
 	})
 	return changes
+}
+
+func (m *Migrator) detectPrimaryKeyColumn(entity manifest.Entity) string {
+	for _, f := range entity.Fields {
+		if strings.EqualFold(f.Name, "id") && f.Unique {
+			return m.formatColumnName(f.Name)
+		}
+	}
+	return ""
+}
+
+func (m *Migrator) constraintToSQL(entity manifest.Entity, c manifest.Constraint) (string, error) {
+	switch strings.ToLower(c.Type) {
+	case "unique":
+		if len(c.Fields) == 0 {
+			return "", fmt.Errorf("constraint unique sem fields em %s", entity.Name)
+		}
+		cols := make([]string, 0, len(c.Fields))
+		for _, f := range c.Fields {
+			cols = append(cols, m.formatColumnName(f))
+		}
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			return fmt.Sprintf("UNIQUE (%s)", strings.Join(cols, ", ")), nil
+		}
+		return fmt.Sprintf("CONSTRAINT %s UNIQUE (%s)", name, strings.Join(cols, ", ")), nil
+	case "check":
+		expr := strings.TrimSpace(c.Expression)
+		if expr == "" {
+			return "", fmt.Errorf("constraint check sem expression em %s", entity.Name)
+		}
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			return fmt.Sprintf("CHECK (%s)", expr), nil
+		}
+		return fmt.Sprintf("CONSTRAINT %s CHECK (%s)", name, expr), nil
+	case "foreign_key":
+		if len(c.Fields) == 0 || strings.TrimSpace(c.Expression) == "" {
+			return "", fmt.Errorf("constraint foreign_key inválida em %s", entity.Name)
+		}
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			return c.Expression, nil
+		}
+		return fmt.Sprintf("CONSTRAINT %s %s", name, c.Expression), nil
+	default:
+		return "", fmt.Errorf("constraint type inválido %q em %s", c.Type, entity.Name)
+	}
+}
+
+func (m *Migrator) findField(entityName, fieldName string) (manifest.Field, bool) {
+	for _, e := range m.manifest.DataModel.Entities {
+		if e.Name == entityName {
+			for _, f := range e.Fields {
+				if f.Name == fieldName {
+					return f, true
+				}
+			}
+			return manifest.Field{}, false
+		}
+	}
+	return manifest.Field{}, false
+}
+
+func onDeleteClause(onDelete string) string {
+	switch strings.ToLower(strings.TrimSpace(onDelete)) {
+	case "":
+		return ""
+	case "cascade":
+		return " ON DELETE CASCADE"
+	case "set_null":
+		return " ON DELETE SET NULL"
+	case "restrict":
+		return " ON DELETE RESTRICT"
+	default:
+		return ""
+	}
+}
+
+func sqlLiteral(v interface{}) (string, bool) {
+	switch t := v.(type) {
+	case nil:
+		return "NULL", true
+	case string:
+		return "'" + strings.ReplaceAll(t, "'", "''") + "'", true
+	case bool:
+		if t {
+			return "TRUE", true
+		}
+		return "FALSE", true
+	case int:
+		return strconv.FormatInt(int64(t), 10), true
+	case int8:
+		return strconv.FormatInt(int64(t), 10), true
+	case int16:
+		return strconv.FormatInt(int64(t), 10), true
+	case int32:
+		return strconv.FormatInt(int64(t), 10), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(t), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(t), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(t), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(t), 10), true
+	case uint64:
+		return strconv.FormatUint(t, 10), true
+	case float32:
+		return strconv.FormatFloat(float64(t), 'f', -1, 32), true
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	default:
+		return "", false
+	}
+}
+
+func toSnakeCase(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+
+	prevUnderscore := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if ch == ' ' || ch == '-' {
+			if !prevUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+			continue
+		}
+
+		isUpper := ch >= 'A' && ch <= 'Z'
+		isLower := ch >= 'a' && ch <= 'z'
+		isDigit := ch >= '0' && ch <= '9'
+
+		if isUpper {
+			if b.Len() > 0 && !prevUnderscore {
+				prev := s[i-1]
+				prevIsLower := prev >= 'a' && prev <= 'z'
+				prevIsDigit := prev >= '0' && prev <= '9'
+				nextIsLower := false
+				if i+1 < len(s) {
+					next := s[i+1]
+					nextIsLower = next >= 'a' && next <= 'z'
+				}
+				if prevIsLower || prevIsDigit || nextIsLower {
+					b.WriteByte('_')
+				}
+			}
+			b.WriteByte(ch + ('a' - 'A'))
+			prevUnderscore = false
+			continue
+		}
+
+		if isLower || isDigit {
+			b.WriteByte(ch)
+			prevUnderscore = false
+			continue
+		}
+
+		if !prevUnderscore && b.Len() > 0 {
+			b.WriteByte('_')
+			prevUnderscore = true
+		}
+	}
+
+	out := b.String()
+	out = strings.Trim(out, "_")
+	return out
 }

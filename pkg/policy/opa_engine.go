@@ -1,39 +1,57 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/open-policy-agent/opa/rego"
 )
 
-// PolicyEngine é uma engine de políticas compatível com Go 1.19
-// Suporta regras no formato: "role in ['admin', 'editor'] && state == 'DRAFT'"
 type PolicyEngine struct {
-	policies map[string]*Policy
+	policies map[string]*compiledPolicy
 }
 
-// Policy representa uma política com nome e regra
-type Policy struct {
-	Name  string
-	Rule  string
+type compiledPolicy struct {
+	name       string
+	rule       string
+	packageRef string
+	prepared   rego.PreparedEvalQuery
+	compileErr error
 }
 
-// NewPolicyEngine cria uma nova engine de políticas
 func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{
-		policies: make(map[string]*Policy),
+		policies: make(map[string]*compiledPolicy),
 	}
 }
 
-// RegisterPolicy registra uma política na engine
 func (e *PolicyEngine) RegisterPolicy(name, rule string) {
-	e.policies[name] = &Policy{
-		Name: name,
-		Rule: rule,
+	cp := &compiledPolicy{name: name, rule: rule}
+	cp.packageRef = "picoclaw.policy." + sanitizePackageSegment(name)
+	module, err := buildRegoModule(cp.packageRef, rule)
+	if err != nil {
+		cp.compileErr = err
+		e.policies[name] = cp
+		return
 	}
+
+	query := "data." + cp.packageRef + ".allow"
+	prepared, err := rego.New(
+		rego.Query(query),
+		rego.Module("policy_"+sanitizeModuleName(name)+".rego", module),
+	).PrepareForEval(context.Background())
+	if err != nil {
+		cp.compileErr = err
+		e.policies[name] = cp
+		return
+	}
+
+	cp.prepared = prepared
+	e.policies[name] = cp
 }
 
-// EvalContext contexto para avaliação de políticas
 type EvalContext struct {
 	User     map[string]interface{}
 	Action   string
@@ -41,320 +59,657 @@ type EvalContext struct {
 	State    string
 }
 
-// Evaluate avalia uma política contra o contexto fornecido
 func (e *PolicyEngine) Evaluate(policyName string, ctx EvalContext) (bool, error) {
 	policy, exists := e.policies[policyName]
 	if !exists {
 		return false, fmt.Errorf("política não encontrada: %s", policyName)
 	}
 
-	result, err := evaluateRule(policy.Rule, ctx)
+	if policy.compileErr != nil {
+		return false, fmt.Errorf("erro ao compilar política %s: %w", policyName, policy.compileErr)
+	}
+
+	input := map[string]interface{}{
+		"user":     ctx.User,
+		"action":   ctx.Action,
+		"resource": ctx.Resource,
+		"state":    ctx.State,
+	}
+
+	rs, err := policy.prepared.Eval(context.Background(), rego.EvalInput(input))
 	if err != nil {
 		return false, fmt.Errorf("erro ao avaliar política %s: %w", policyName, err)
 	}
 
-	return result, nil
-}
-
-// evaluateRule avalia uma regra simples
-func evaluateRule(rule string, ctx EvalContext) (bool, error) {
-	// Remove espaços extras
-	rule = strings.TrimSpace(rule)
-	
-	// Handle default allow/deny
-	if rule == "true" || rule == "allow" {
-		return true, nil
-	}
-	if rule == "false" || rule == "deny" {
-		return false, nil
-	}
-
-	// Avalia expressões compostas (AND, OR)
-	return evalExpression(rule, ctx)
-}
-
-func evalExpression(expr string, ctx EvalContext) (bool, error) {
-	expr = strings.TrimSpace(expr)
-	
-	// Handle OR expressions
-	orParts := splitByOperator(expr, "||")
-	if len(orParts) > 1 {
-		for _, part := range orParts {
-			result, err := evalExpression(strings.TrimSpace(part), ctx)
-			if err != nil {
-				return false, err
-			}
-			if result {
+	for _, r := range rs {
+		for _, exp := range r.Expressions {
+			if b, ok := exp.Value.(bool); ok && b {
 				return true, nil
 			}
 		}
-		return false, nil
 	}
 
-	// Handle AND expressions - split by && and evaluate each part
-	andParts := splitByOperator(expr, "&&")
-	if len(andParts) > 1 {
-		for _, part := range andParts {
-			result, err := evalExpression(strings.TrimSpace(part), ctx)
-			if err != nil {
-				return false, err
-			}
-			if !result {
-				return false, nil
-			}
-		}
-		return true, nil
+	return false, nil
+}
+
+type exprKind int
+
+const (
+	exprAtom exprKind = iota
+	exprAnd
+	exprOr
+	exprNot
+)
+
+type exprNode struct {
+	kind     exprKind
+	atom     string
+	children []*exprNode
+}
+
+type atomCond struct {
+	expr string
+	neg  bool
+}
+
+func buildRegoModule(packageRef, rule string) (string, error) {
+	rule = strings.TrimSpace(rule)
+	if rule == "" {
+		return "", fmt.Errorf("regra vazia")
 	}
 
-	// Handle NOT expressions
-	if strings.HasPrefix(expr, "!") || strings.HasPrefix(expr, "not ") {
-		var inner string
-		if strings.HasPrefix(expr, "!") {
-			inner = strings.TrimSpace(expr[1:])
+	bodies, err := toRegoBodies(rule)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	b.WriteString("package ")
+	b.WriteString(packageRef)
+	b.WriteString("\n\n")
+	b.WriteString("default allow = false\n\n")
+	b.WriteString("user := input.user\n")
+	b.WriteString("action := input.action\n")
+	b.WriteString("resource := input.resource\n")
+	b.WriteString("state := input.state\n\n")
+
+	for _, body := range bodies {
+		b.WriteString("allow {\n")
+		if body == "" {
+			b.WriteString("  true\n")
 		} else {
-			inner = strings.TrimSpace(expr[4:])
+			for _, line := range strings.Split(body, "\n") {
+				b.WriteString("  ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
 		}
-		result, err := evalExpression(inner, ctx)
+		b.WriteString("}\n\n")
+	}
+
+	return b.String(), nil
+}
+
+func toRegoBodies(rule string) ([]string, error) {
+	switch strings.TrimSpace(rule) {
+	case "true", "allow":
+		return []string{""}, nil
+	case "false", "deny":
+		return []string{"false"}, nil
+	}
+
+	normalized, err := normalizeRule(rule)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := parseExpr(normalized)
+	if err != nil {
+		return nil, err
+	}
+
+	nnf := toNNF(parsed, false)
+	dnf := toDNF(nnf)
+	if len(dnf) == 0 {
+		return []string{"false"}, nil
+	}
+
+	bodies := make([]string, 0, len(dnf))
+	for _, conj := range dnf {
+		if len(conj) == 0 {
+			bodies = append(bodies, "")
+			continue
+		}
+		lines := make([]string, 0, len(conj))
+		for _, a := range conj {
+			if strings.TrimSpace(a.expr) == "" {
+				continue
+			}
+			if a.neg {
+				lines = append(lines, "not ("+a.expr+")")
+			} else {
+				lines = append(lines, a.expr)
+			}
+		}
+		bodies = append(bodies, strings.Join(lines, "\n"))
+	}
+
+	return bodies, nil
+}
+
+func normalizeRule(rule string) (string, error) {
+	rule = strings.TrimSpace(rule)
+	rule = strings.ReplaceAll(rule, "\r\n", "\n")
+	rule = strings.ReplaceAll(rule, "\r", "\n")
+
+	var out strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	for i := 0; i < len(rule); i++ {
+		ch := rule[i]
+		if escape {
+			out.WriteByte(ch)
+			escape = false
+			continue
+		}
+		if ch == '\\' {
+			out.WriteByte(ch)
+			escape = true
+			continue
+		}
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+				out.WriteByte('"')
+				continue
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		}
+		out.WriteByte(ch)
+	}
+	if inSingle || inDouble {
+		return "", fmt.Errorf("string literal não terminada")
+	}
+	return out.String(), nil
+}
+
+func parseExpr(s string) (*exprNode, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("expressão vazia")
+	}
+	return parseOr(s)
+}
+
+func parseOr(s string) (*exprNode, error) {
+	parts := splitByOperator(s, "||")
+	if len(parts) > 1 {
+		children := make([]*exprNode, 0, len(parts))
+		for _, p := range parts {
+			n, err := parseAnd(p)
+			if err != nil {
+				return nil, err
+			}
+			children = append(children, n)
+		}
+		return &exprNode{kind: exprOr, children: children}, nil
+	}
+	return parseAnd(s)
+}
+
+func parseAnd(s string) (*exprNode, error) {
+	parts := splitByOperator(s, "&&")
+	if len(parts) > 1 {
+		children := make([]*exprNode, 0, len(parts))
+		for _, p := range parts {
+			n, err := parseUnary(p)
+			if err != nil {
+				return nil, err
+			}
+			children = append(children, n)
+		}
+		return &exprNode{kind: exprAnd, children: children}, nil
+	}
+	return parseUnary(s)
+}
+
+func parseUnary(s string) (*exprNode, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("expressão vazia")
+	}
+
+	for {
+		inner, ok := stripOuterParens(s)
+		if !ok {
+			break
+		}
+		s = strings.TrimSpace(inner)
+	}
+
+	if strings.HasPrefix(s, "!") {
+		child, err := parseUnary(strings.TrimSpace(s[1:]))
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		return !result, nil
+		return &exprNode{kind: exprNot, children: []*exprNode{child}}, nil
+	}
+	if strings.HasPrefix(s, "not ") {
+		child, err := parseUnary(strings.TrimSpace(s[4:]))
+		if err != nil {
+			return nil, err
+		}
+		return &exprNode{kind: exprNot, children: []*exprNode{child}}, nil
 	}
 
-	// Handle parenthesized expressions
-	if strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
-		return evalExpression(expr[1:len(expr)-1], ctx)
+	if inLeft, inRight, ok := splitInOperator(s); ok {
+		alts, err := parseInList(inRight)
+		if err != nil {
+			return nil, err
+		}
+		if len(alts) == 0 {
+			return &exprNode{kind: exprAtom, atom: "false"}, nil
+		}
+		children := make([]*exprNode, 0, len(alts))
+		for _, lit := range alts {
+			children = append(children, &exprNode{kind: exprAtom, atom: strings.TrimSpace(inLeft) + " == " + lit})
+		}
+		if len(children) == 1 {
+			return children[0], nil
+		}
+		return &exprNode{kind: exprOr, children: children}, nil
 	}
 
-	// Handle comparison operators
-	return evalComparison(expr, ctx)
+	return &exprNode{kind: exprAtom, atom: strings.TrimSpace(s)}, nil
+}
+
+func stripOuterParens(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return "", false
+	}
+	if !balancedParens(s[1 : len(s)-1]) {
+		return "", false
+	}
+	return s[1 : len(s)-1], true
+}
+
+func balancedParens(s string) bool {
+	inSingle := false
+	inDouble := false
+	inBrackets := 0
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		switch ch {
+		case '[':
+			inBrackets++
+		case ']':
+			inBrackets--
+		case '(':
+			if inBrackets == 0 {
+				depth++
+			}
+		case ')':
+			if inBrackets == 0 {
+				depth--
+				if depth < 0 {
+					return false
+				}
+			}
+		}
+	}
+	return depth == 0 && inBrackets == 0 && !inSingle && !inDouble
 }
 
 func splitByOperator(s, op string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []string{""}
+	}
+
 	var parts []string
-	current := ""
+	var current strings.Builder
 	inParens := 0
 	inBrackets := 0
-	
+	inSingle := false
+	inDouble := false
+	escape := false
+
 	for i := 0; i < len(s); i++ {
-		char := s[i]
-		
-		if char == '(' {
-			inParens++
-			current += string(char)
-		} else if char == ')' {
-			inParens--
-			current += string(char)
-		} else if char == '[' {
-			inBrackets++
-			current += string(char)
-		} else if char == ']' {
-			inBrackets--
-			current += string(char)
-		} else if inParens == 0 && inBrackets == 0 && strings.HasPrefix(s[i:], op) {
-			parts = append(parts, current)
-			current = ""
-			i += len(op) - 1
-		} else {
-			current += string(char)
+		ch := s[i]
+
+		if escape {
+			current.WriteByte(ch)
+			escape = false
+			continue
 		}
+		if ch == '\\' {
+			current.WriteByte(ch)
+			escape = true
+			continue
+		}
+
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		}
+
+		if !inSingle && !inDouble {
+			switch ch {
+			case '(':
+				inParens++
+			case ')':
+				inParens--
+			case '[':
+				inBrackets++
+			case ']':
+				inBrackets--
+			}
+		}
+
+		if !inSingle && !inDouble && inParens == 0 && inBrackets == 0 && strings.HasPrefix(s[i:], op) {
+			parts = append(parts, strings.TrimSpace(current.String()))
+			current.Reset()
+			i += len(op) - 1
+			continue
+		}
+
+		current.WriteByte(ch)
 	}
-	
-	if current != "" {
-		parts = append(parts, current)
-	}
-	
+
+	parts = append(parts, strings.TrimSpace(current.String()))
 	return parts
 }
 
-func evalComparison(expr string, ctx EvalContext) (bool, error) {
-	expr = strings.TrimSpace(expr)
-	
-	// Handle "in" operator: role in ['admin', 'editor']
-	inMatch := regexp.MustCompile(`(\w+(?:\.\w+)*)\s+in\s+\[([^\]]+)\]`).FindStringSubmatch(expr)
-	if len(inMatch) == 3 {
-		value, err := getValueFromPath(inMatch[1], ctx)
-		if err != nil {
-			return false, err
-		}
-		
-		values := parseArray(inMatch[2])
-		for _, v := range values {
-			v = strings.TrimSpace(v)
-			if compareValues(value, v) {
-				return true, nil
-			}
-		}
-		return false, nil
+func splitInOperator(s string) (string, string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", false
 	}
 
-	// Handle equality/inequality operators - process ALL comparisons in the expression
-	operators := []string{"==", "!=", ">=", "<=", ">", "<"}
-	allPassed := true
-	
-	for _, op := range operators {
-		parts := strings.SplitN(expr, op, 2)
-		if len(parts) == 2 {
-			left := strings.TrimSpace(parts[0])
-			right := strings.TrimSpace(parts[1])
-			
-			leftVal, err := getValueFromPath(left, ctx)
-			if err != nil {
-				// Se não conseguir obter valor, trata como literal
-				leftVal = left
+	inParens := 0
+	inBrackets := 0
+	inSingle := false
+	inDouble := false
+	escape := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if ch == '\\' {
+			escape = true
+			continue
+		}
+
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
 			}
-			
-			rightVal, err := getValueFromPath(right, ctx)
-			if err != nil {
-				// Se não conseguir obter valor, trata como literal
-				rightVal = strings.Trim(right, "'\"")
-			}
-			
-			result, err := compareWithOperator(leftVal, rightVal, op)
-			if err != nil {
-				return false, err
-			}
-			if !result {
-				allPassed = false
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
 			}
 		}
+
+		if inSingle || inDouble {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			inParens++
+		case ')':
+			inParens--
+		case '[':
+			inBrackets++
+		case ']':
+			inBrackets--
+		}
+
+		if inParens == 0 && inBrackets == 0 && strings.HasPrefix(s[i:], " in ") {
+			left := strings.TrimSpace(s[:i])
+			right := strings.TrimSpace(s[i+4:])
+			return left, right, left != "" && right != ""
+		}
 	}
-	
-	return allPassed, nil
+
+	return "", "", false
 }
 
-func getValueFromPath(path string, ctx EvalContext) (interface{}, error) {
-	path = strings.TrimSpace(path)
-	
-	// Remove aspas se for string literal
-	if (strings.HasPrefix(path, "'") && strings.HasSuffix(path, "'")) ||
-	   (strings.HasPrefix(path, "\"") && strings.HasSuffix(path, "\"")) {
-		return strings.Trim(path, "'\""), nil
+func parseInList(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	matches := regexp.MustCompile(`^\[(.*)\]$`).FindStringSubmatch(s)
+	if len(matches) != 2 {
+		return nil, fmt.Errorf("lista inválida em operador in: %s", s)
 	}
 
-	// Handle numeric literals
-	if strings.Contains(path, ".") {
-		// Pode ser float ou path
-		if _, err := fmt.Sscanf(path, "%f", new(float64)); err == nil && !strings.Contains(path, "user.") && !strings.Contains(path, "resource.") {
-			return path, nil
+	inner := strings.TrimSpace(matches[1])
+	if inner == "" {
+		return []string{}, nil
+	}
+
+	values := splitCommaSeparated(inner)
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
 		}
+		out = append(out, v)
 	}
-	
-	parts := strings.Split(path, ".")
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("path inválido: %s", path)
+	return out, nil
+}
+
+func splitCommaSeparated(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	inParens := 0
+	inBrackets := 0
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escape {
+			cur.WriteByte(ch)
+			escape = false
+			continue
+		}
+		if ch == '\\' {
+			cur.WriteByte(ch)
+			escape = true
+			continue
+		}
+
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		}
+
+		if !inSingle && !inDouble {
+			switch ch {
+			case '(':
+				inParens++
+			case ')':
+				inParens--
+			case '[':
+				inBrackets++
+			case ']':
+				inBrackets--
+			}
+		}
+
+		if !inSingle && !inDouble && inParens == 0 && inBrackets == 0 && ch == ',' {
+			parts = append(parts, strings.TrimSpace(cur.String()))
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(ch)
 	}
 
-	var current interface{}
-	
-	switch parts[0] {
-	case "user":
-		current = ctx.User
-	case "resource":
-		current = ctx.Resource
-	case "state":
-		current = ctx.State
-	case "action":
-		current = ctx.Action
+	parts = append(parts, strings.TrimSpace(cur.String()))
+	return parts
+}
+
+func toNNF(n *exprNode, neg bool) *exprNode {
+	switch n.kind {
+	case exprNot:
+		return toNNF(n.children[0], !neg)
+	case exprAtom:
+		if neg {
+			return &exprNode{kind: exprNot, children: []*exprNode{{kind: exprAtom, atom: n.atom}}}
+		}
+		return &exprNode{kind: exprAtom, atom: n.atom}
+	case exprAnd:
+		children := make([]*exprNode, 0, len(n.children))
+		if neg {
+			for _, c := range n.children {
+				children = append(children, toNNF(c, true))
+			}
+			return &exprNode{kind: exprOr, children: children}
+		}
+		for _, c := range n.children {
+			children = append(children, toNNF(c, false))
+		}
+		return &exprNode{kind: exprAnd, children: children}
+	case exprOr:
+		children := make([]*exprNode, 0, len(n.children))
+		if neg {
+			for _, c := range n.children {
+				children = append(children, toNNF(c, true))
+			}
+			return &exprNode{kind: exprAnd, children: children}
+		}
+		for _, c := range n.children {
+			children = append(children, toNNF(c, false))
+		}
+		return &exprNode{kind: exprOr, children: children}
 	default:
-		return nil, fmt.Errorf("contexto desconhecido: %s", parts[0])
-	}
-
-	for i := 1; i < len(parts); i++ {
-		if m, ok := current.(map[string]interface{}); ok {
-			current = m[parts[i]]
-		} else {
-			return nil, fmt.Errorf("path inválido em %s", parts[i])
+		if neg {
+			return &exprNode{kind: exprNot, children: []*exprNode{{kind: exprAtom, atom: "false"}}}
 		}
+		return &exprNode{kind: exprAtom, atom: "false"}
 	}
-
-	return current, nil
 }
 
-func parseArray(s string) []string {
-	parts := strings.Split(s, ",")
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		result = append(result, strings.TrimSpace(p))
-	}
-	return result
-}
-
-func compareValues(a, b interface{}) bool {
-	aStr := fmt.Sprintf("%v", a)
-	bStr := fmt.Sprintf("%v", b)
-	
-	// Remove quotes from strings
-	aStr = strings.Trim(aStr, "'\"")
-	bStr = strings.Trim(bStr, "'\"")
-	
-	return aStr == bStr
-}
-
-func compareWithOperator(left, right interface{}, op string) (bool, error) {
-	// Tenta converter para números se possível
-	var leftNum, rightNum float64
-	var leftIsNum, rightIsNum bool
-	
-	if _, err := fmt.Sscanf(fmt.Sprintf("%v", left), "%f", &leftNum); err == nil {
-		leftIsNum = true
-	}
-	if _, err := fmt.Sscanf(fmt.Sprintf("%v", right), "%f", &rightNum); err == nil {
-		rightIsNum = true
-	}
-	
-	if leftIsNum && rightIsNum {
-		switch op {
-		case "==":
-			return leftNum == rightNum, nil
-		case "!=":
-			return leftNum != rightNum, nil
-		case ">=":
-			return leftNum >= rightNum, nil
-		case "<=":
-			return leftNum <= rightNum, nil
-		case ">":
-			return leftNum > rightNum, nil
-		case "<":
-			return leftNum < rightNum, nil
+func toDNF(n *exprNode) [][]atomCond {
+	switch n.kind {
+	case exprAtom:
+		if strings.TrimSpace(n.atom) == "" {
+			return [][]atomCond{}
 		}
-	}
-	
-	// Comparação de strings
-	leftStr := fmt.Sprintf("%v", left)
-	rightStr := fmt.Sprintf("%v", right)
-	leftStr = strings.Trim(leftStr, "'\"")
-	rightStr = strings.Trim(rightStr, "'\"")
-	
-	switch op {
-	case "==":
-		return leftStr == rightStr, nil
-	case "!=":
-		return leftStr != rightStr, nil
+		return [][]atomCond{{{expr: strings.TrimSpace(n.atom)}}}
+	case exprNot:
+		if len(n.children) != 1 || n.children[0].kind != exprAtom {
+			return [][]atomCond{}
+		}
+		atom := strings.TrimSpace(n.children[0].atom)
+		if atom == "" {
+			return [][]atomCond{}
+		}
+		return [][]atomCond{{{expr: atom, neg: true}}}
+	case exprOr:
+		var out [][]atomCond
+		for _, c := range n.children {
+			out = append(out, toDNF(c)...)
+		}
+		return out
+	case exprAnd:
+		out := [][]atomCond{{}}
+		for _, c := range n.children {
+			right := toDNF(c)
+			if len(right) == 0 {
+				return [][]atomCond{}
+			}
+			var next [][]atomCond
+			for _, a := range out {
+				for _, b := range right {
+					merged := make([]atomCond, 0, len(a)+len(b))
+					merged = append(merged, a...)
+					merged = append(merged, b...)
+					next = append(next, merged)
+				}
+			}
+			out = next
+		}
+		return out
 	default:
-		return false, fmt.Errorf("operador %s não suportado para strings", op)
+		return [][]atomCond{}
 	}
 }
 
-func isTruthy(value interface{}) bool {
-	if value == nil {
-		return false
+func sanitizePackageSegment(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return "policy"
 	}
-	
-	switch v := value.(type) {
-	case bool:
-		return v
-	case int, int8, int16, int32, int64:
-		return v != 0
-	case float32, float64:
-		return v != 0
-	case string:
-		return v != "" && v != "false"
-	case []interface{}:
-		return len(v) > 0
-	case map[string]interface{}:
-		return len(v) > 0
-	default:
-		return true
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			b.WriteByte(ch)
+			continue
+		}
+		b.WriteByte('_')
 	}
+	out := b.String()
+	if out[0] >= '0' && out[0] <= '9' {
+		out = "p_" + out
+	}
+	out = strings.Trim(out, "_")
+	if out == "" {
+		return "policy"
+	}
+	return out
+}
+
+func sanitizeModuleName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "policy"
+	}
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, ".", "_")
+	s = strings.ReplaceAll(s, " ", "_")
+	if s == "" {
+		return "policy"
+	}
+	return s
 }

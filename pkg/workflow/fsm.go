@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 )
 
 // State representa um estado no workflow
@@ -52,16 +53,6 @@ func NewFSM(config FSMConfig) (*FSM, error) {
 	return &FSM{config: config}, nil
 }
 
-// contains verifica se um slice contém um elemento
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 // CanTransition verifica se uma transição é válida
 func (f *FSM) CanTransition(current State, action Action, userRoles []string) (bool, State, error) {
 	config, exists := f.config.States[current]
@@ -74,7 +65,7 @@ func (f *FSM) CanTransition(current State, action Action, userRoles []string) (b
 			// Verifica se o usuário tem algum dos papéis permitidos
 			hasRole := false
 			for _, role := range userRoles {
-				if contains(t.AllowedRoles, role) {
+				if slices.Contains(t.AllowedRoles, role) {
 					hasRole = true
 					break
 				}
@@ -120,7 +111,7 @@ func (f *FSM) ListTransitions(state State, userRoles []string) []Transition {
 	for _, t := range config.Transitions {
 		// Filtra apenas transições que o usuário pode executar
 		for _, role := range userRoles {
-			if contains(t.AllowedRoles, role) {
+			if slices.Contains(t.AllowedRoles, role) {
 				validTransitions = append(validTransitions, t)
 				break
 			}
