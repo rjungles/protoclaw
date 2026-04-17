@@ -48,8 +48,7 @@ htmlcov/
 *.out
 *.test
 *.prof
-go.mod
-go.sum
+cover.out
 
 # Logs and temp files
 *.log
@@ -60,15 +59,12 @@ go.sum
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # System files
 .DS_Store
 Thumbs.db
-
-# Coverage
-coverage/
-htmlcov/
-*.coverage
 
 # Compressed files
 *.zip
