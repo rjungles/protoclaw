@@ -9,6 +9,10 @@ import (
 const (
 	ProtocolVersion = "2024-11-05"
 	JSONRPCVersion  = "2.0"
+
+	MethodNotFound = -32601
+	InvalidRequest = -32600
+	InternalError  = -32603
 )
 
 type Request struct {
@@ -36,9 +40,9 @@ func (e *Error) Error() string {
 }
 
 type InitializeParams struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	ClientInfo      ClientInfo             `json:"clientInfo"`
-	Capabilities    ClientCapabilities     `json:"capabilities"`
+	ProtocolVersion string             `json:"protocolVersion"`
+	ClientInfo      ClientInfo         `json:"clientInfo"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
 }
 
 type ClientInfo struct {
@@ -155,9 +159,9 @@ type ResourceContents struct {
 }
 
 type Prompt struct {
-	Name        string       `json:"name"`
-	Description string       `json:"description,omitempty"`
-	Arguments   []PromptArg  `json:"arguments,omitempty"`
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Arguments   []PromptArg `json:"arguments,omitempty"`
 }
 
 type PromptArg struct {
@@ -186,8 +190,8 @@ type GetPromptResult struct {
 }
 
 type PromptMessage struct {
-	Role    string      `json:"role"`
-	Content Content     `json:"content"`
+	Role    string  `json:"role"`
+	Content Content `json:"content"`
 }
 
 var requestIDCounter int64
