@@ -643,6 +643,19 @@ func sqlLiteral(v interface{}) (string, bool) {
 	case nil:
 		return "NULL", true
 	case string:
+		lower := strings.ToLower(t)
+		if lower == "now()" || lower == "now" || lower == "current_timestamp" {
+			return "CURRENT_TIMESTAMP", true
+		}
+		if lower == "null" {
+			return "NULL", true
+		}
+		if lower == "true" {
+			return "TRUE", true
+		}
+		if lower == "false" {
+			return "FALSE", true
+		}
 		return "'" + strings.ReplaceAll(t, "'", "''") + "'", true
 	case bool:
 		if t {

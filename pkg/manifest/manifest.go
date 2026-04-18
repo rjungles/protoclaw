@@ -33,6 +33,9 @@ type Manifest struct {
 
 	// Configurações não funcionais
 	NonFunctional NonFunctional `yaml:"non_functional" json:"non_functional"`
+
+	// Workflows definidos no manifesto
+	Workflows []WorkflowConfig `yaml:"workflows,omitempty" json:"workflows,omitempty"`
 }
 
 // Metadata contém informações básicas do sistema
@@ -58,14 +61,14 @@ type Actor struct {
 
 // Permission define uma permissão específica
 type Permission struct {
-	Resource string   `yaml:"resource" json:"resource"`
-	Actions  []string `yaml:"actions" json:"actions"` // read, write, delete, execute
-	Condition string  `yaml:"condition,omitempty" json:"condition,omitempty"`
+	Resource  string   `yaml:"resource" json:"resource"`
+	Actions   []string `yaml:"actions" json:"actions"` // read, write, delete, execute
+	Condition string   `yaml:"condition,omitempty" json:"condition,omitempty"`
 }
 
 // DataModel define a estrutura de dados do sistema
 type DataModel struct {
-	Entities []Entity `yaml:"entities" json:"entities"`
+	Entities  []Entity   `yaml:"entities" json:"entities"`
 	Relations []Relation `yaml:"relations,omitempty" json:"relations,omitempty"`
 }
 
@@ -93,16 +96,16 @@ type Field struct {
 
 // Reference define uma relação com outra entidade
 type Reference struct {
-	Entity string `yaml:"entity" json:"entity"`
-	Field  string `yaml:"field" json:"field"`
+	Entity   string `yaml:"entity" json:"entity"`
+	Field    string `yaml:"field" json:"field"`
 	OnDelete string `yaml:"on_delete,omitempty" json:"on_delete,omitempty"` // cascade, set_null, restrict
 }
 
 // Index define um índice na entidade
 type Index struct {
-	Name    string   `yaml:"name" json:"name"`
-	Fields  []string `yaml:"fields" json:"fields"`
-	Unique  bool     `yaml:"unique" json:"unique"`
+	Name   string   `yaml:"name" json:"name"`
+	Fields []string `yaml:"fields" json:"fields"`
+	Unique bool     `yaml:"unique" json:"unique"`
 }
 
 // Constraint define uma restrição de integridade
@@ -115,11 +118,11 @@ type Constraint struct {
 
 // Relation define relacionamentos entre entidades
 type Relation struct {
-	Name     string `yaml:"name" json:"name"`
-	From     string `yaml:"from" json:"from"`
-	To       string `yaml:"to" json:"to"`
-	Type     string `yaml:"type" json:"type"` // one_to_one, one_to_many, many_to_many
-	Through  string `yaml:"through,omitempty" json:"through,omitempty"`
+	Name    string `yaml:"name" json:"name"`
+	From    string `yaml:"from" json:"from"`
+	To      string `yaml:"to" json:"to"`
+	Type    string `yaml:"type" json:"type"` // one_to_one, one_to_many, many_to_many
+	Through string `yaml:"through,omitempty" json:"through,omitempty"`
 }
 
 // BusinessRule define uma regra de negócio
@@ -137,10 +140,10 @@ type BusinessRule struct {
 
 // Trigger define quando uma regra é acionada
 type Trigger struct {
-	Event     string   `yaml:"event" json:"event"` // create, update, delete, read
-	Entities  []string `yaml:"entities" json:"entities"`
-	Before    bool     `yaml:"before" json:"before"`
-	After     bool     `yaml:"after" json:"after"`
+	Event    string   `yaml:"event" json:"event"` // create, update, delete, read
+	Entities []string `yaml:"entities" json:"entities"`
+	Before   bool     `yaml:"before" json:"before"`
+	After    bool     `yaml:"after" json:"after"`
 }
 
 // RuleAction define uma ação executada por uma regra
@@ -153,32 +156,32 @@ type RuleAction struct {
 
 // Integrations define as integrações do sistema
 type Integrations struct {
-	APIs       []APIConfig       `yaml:"apis,omitempty" json:"apis,omitempty"`
-	MCPs       []MCPConfig       `yaml:"mcps,omitempty" json:"mcps,omitempty"`
-	Channels   []ChannelConfig   `yaml:"channels,omitempty" json:"channels,omitempty"`
-	Webhooks   []WebhookConfig   `yaml:"webhooks,omitempty" json:"webhooks,omitempty"`
+	APIs     []APIConfig     `yaml:"apis,omitempty" json:"apis,omitempty"`
+	MCPs     []MCPConfig     `yaml:"mcps,omitempty" json:"mcps,omitempty"`
+	Channels []ChannelConfig `yaml:"channels,omitempty" json:"channels,omitempty"`
+	Webhooks []WebhookConfig `yaml:"webhooks,omitempty" json:"webhooks,omitempty"`
 }
 
 // APIConfig define uma API exposta pelo sistema
 type APIConfig struct {
-	Name        string            `yaml:"name" json:"name"`
-	BasePath    string            `yaml:"base_path" json:"base_path"`
-	Version     string            `yaml:"version" json:"version"`
-	Endpoints   []Endpoint        `yaml:"endpoints" json:"endpoints"`
-	Auth        AuthConfig        `yaml:"auth,omitempty" json:"auth,omitempty"`
-	RateLimit   *RateLimitConfig  `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"`
-	CORS        *CORSConfig       `yaml:"cors,omitempty" json:"cors,omitempty"`
+	Name      string           `yaml:"name" json:"name"`
+	BasePath  string           `yaml:"base_path" json:"base_path"`
+	Version   string           `yaml:"version" json:"version"`
+	Endpoints []Endpoint       `yaml:"endpoints" json:"endpoints"`
+	Auth      AuthConfig       `yaml:"auth,omitempty" json:"auth,omitempty"`
+	RateLimit *RateLimitConfig `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"`
+	CORS      *CORSConfig      `yaml:"cors,omitempty" json:"cors,omitempty"`
 }
 
 // Endpoint define um endpoint de API
 type Endpoint struct {
-	Path        string            `yaml:"path" json:"path"`
-	Method      string            `yaml:"method" json:"method"` // GET, POST, PUT, DELETE, PATCH
-	Description string            `yaml:"description" json:"description"`
-	Handler     string            `yaml:"handler" json:"handler"` // referência a skill ou função
-	Input       *SchemaRef        `yaml:"input,omitempty" json:"input,omitempty"`
-	Output      *SchemaRef        `yaml:"output,omitempty" json:"output,omitempty"`
-	Permissions []string          `yaml:"permissions,omitempty" json:"permissions,omitempty"`
+	Path        string     `yaml:"path" json:"path"`
+	Method      string     `yaml:"method" json:"method"` // GET, POST, PUT, DELETE, PATCH
+	Description string     `yaml:"description" json:"description"`
+	Handler     string     `yaml:"handler" json:"handler"` // referência a skill ou função
+	Input       *SchemaRef `yaml:"input,omitempty" json:"input,omitempty"`
+	Output      *SchemaRef `yaml:"output,omitempty" json:"output,omitempty"`
+	Permissions []string   `yaml:"permissions,omitempty" json:"permissions,omitempty"`
 }
 
 // SchemaRef referencia um schema do DataModel
@@ -218,7 +221,7 @@ func (m *MCPToolString) UnmarshalYAML(value *yaml.Node) error {
 		m.Name = s
 		return nil
 	}
-	
+
 	// Tentar como objeto com nome e descrição
 	type toolObj struct {
 		Name        string `yaml:"name"`
@@ -230,7 +233,7 @@ func (m *MCPToolString) UnmarshalYAML(value *yaml.Node) error {
 		m.Description = t.Description
 		return nil
 	}
-	
+
 	return fmt.Errorf("não foi possível fazer parse da ferramenta MCP")
 }
 
@@ -247,11 +250,11 @@ func (m MCPToolString) MarshalYAML() (interface{}, error) {
 
 // ChannelConfig define um canal de comunicação
 type ChannelConfig struct {
-	Type     string            `yaml:"type" json:"type"` // telegram, discord, slack, web, irc
-	Name     string            `yaml:"name" json:"name"`
-	Config   map[string]string `yaml:"config" json:"config"`
-	Agents   []string          `yaml:"agents,omitempty" json:"agents,omitempty"`
-	Enabled  bool              `yaml:"enabled" json:"enabled"`
+	Type    string            `yaml:"type" json:"type"` // telegram, discord, slack, web, irc
+	Name    string            `yaml:"name" json:"name"`
+	Config  map[string]string `yaml:"config" json:"config"`
+	Agents  []string          `yaml:"agents,omitempty" json:"agents,omitempty"`
+	Enabled bool              `yaml:"enabled" json:"enabled"`
 }
 
 // WebhookConfig define um webhook
@@ -267,8 +270,8 @@ type WebhookConfig struct {
 
 // AuthConfig define configuração de autenticação
 type AuthConfig struct {
-	Type     string            `yaml:"type" json:"type"` // jwt, api_key, oauth2, basic
-	Config   map[string]string `yaml:"config,omitempty" json:"config,omitempty"`
+	Type   string            `yaml:"type" json:"type"` // jwt, api_key, oauth2, basic
+	Config map[string]string `yaml:"config,omitempty" json:"config,omitempty"`
 }
 
 // RateLimitConfig define limites de taxa
@@ -300,26 +303,26 @@ type SecurityPolicy struct {
 
 // AuthenticationPolicy define políticas de autenticação
 type AuthenticationPolicy struct {
-	Methods          []string `yaml:"methods" json:"methods"`
-	SessionTimeout   int      `yaml:"session_timeout_minutes" json:"session_timeout_minutes"`
-	MFARequired      bool     `yaml:"mfa_required" json:"mfa_required"`
-	PasswordPolicy   *PasswordPolicy `yaml:"password_policy,omitempty" json:"password_policy,omitempty"`
+	Methods        []string        `yaml:"methods" json:"methods"`
+	SessionTimeout int             `yaml:"session_timeout_minutes" json:"session_timeout_minutes"`
+	MFARequired    bool            `yaml:"mfa_required" json:"mfa_required"`
+	PasswordPolicy *PasswordPolicy `yaml:"password_policy,omitempty" json:"password_policy,omitempty"`
 }
 
 // PasswordPolicy define política de senhas
 type PasswordPolicy struct {
-	MinLength       int  `yaml:"min_length" json:"min_length"`
+	MinLength        int  `yaml:"min_length" json:"min_length"`
 	RequireUppercase bool `yaml:"require_uppercase" json:"require_uppercase"`
 	RequireLowercase bool `yaml:"require_lowercase" json:"require_lowercase"`
-	RequireNumbers  bool `yaml:"require_numbers" json:"require_numbers"`
-	RequireSpecial  bool `yaml:"require_special" json:"require_special"`
+	RequireNumbers   bool `yaml:"require_numbers" json:"require_numbers"`
+	RequireSpecial   bool `yaml:"require_special" json:"require_special"`
 }
 
 // AuthorizationPolicy define políticas de autorização
 type AuthorizationPolicy struct {
-	Model             string            `yaml:"model" json:"model"` // rbac, abac, acl
-	DefaultDeny       bool              `yaml:"default_deny" json:"default_deny"`
-	RoleHierarchy     []RoleHierarchy   `yaml:"role_hierarchy,omitempty" json:"role_hierarchy,omitempty"`
+	Model             string             `yaml:"model" json:"model"` // rbac, abac, acl
+	DefaultDeny       bool               `yaml:"default_deny" json:"default_deny"`
+	RoleHierarchy     []RoleHierarchy    `yaml:"role_hierarchy,omitempty" json:"role_hierarchy,omitempty"`
 	ContextConditions []ContextCondition `yaml:"context_conditions,omitempty" json:"context_conditions,omitempty"`
 }
 
@@ -331,17 +334,17 @@ type RoleHierarchy struct {
 
 // ContextCondition define condições contextuais para acesso
 type ContextCondition struct {
-	Name       string            `yaml:"name" json:"name"`
-	Expression string            `yaml:"expression" json:"expression"`
-	Message    string            `yaml:"message" json:"message"`
+	Name       string `yaml:"name" json:"name"`
+	Expression string `yaml:"expression" json:"expression"`
+	Message    string `yaml:"message" json:"message"`
 }
 
 // DataProtectionPolicy define políticas de proteção de dados
 type DataProtectionPolicy struct {
-	EncryptionAtRest    bool                `yaml:"encryption_at_rest" json:"encryption_at_rest"`
-	EncryptionInTransit bool                `yaml:"encryption_in_transit" json:"encryption_in_transit"`
-	SensitiveFields     []SensitiveField    `yaml:"sensitive_fields,omitempty" json:"sensitive_fields,omitempty"`
-	DataRetention       *DataRetention      `yaml:"data_retention,omitempty" json:"data_retention,omitempty"`
+	EncryptionAtRest    bool             `yaml:"encryption_at_rest" json:"encryption_at_rest"`
+	EncryptionInTransit bool             `yaml:"encryption_in_transit" json:"encryption_in_transit"`
+	SensitiveFields     []SensitiveField `yaml:"sensitive_fields,omitempty" json:"sensitive_fields,omitempty"`
+	DataRetention       *DataRetention   `yaml:"data_retention,omitempty" json:"data_retention,omitempty"`
 }
 
 // SensitiveField define um campo sensível
@@ -355,8 +358,8 @@ type SensitiveField struct {
 
 // DataRetention define política de retenção de dados
 type DataRetention struct {
-	DefaultDays int                `yaml:"default_days" json:"default_days"`
-	Rules       []RetentionRule    `yaml:"rules,omitempty" json:"rules,omitempty"`
+	DefaultDays int             `yaml:"default_days" json:"default_days"`
+	Rules       []RetentionRule `yaml:"rules,omitempty" json:"rules,omitempty"`
 }
 
 // RetentionRule define regra de retenção específica
@@ -368,12 +371,12 @@ type RetentionRule struct {
 
 // AuditPolicy define políticas de auditoria
 type AuditPolicy struct {
-	Enabled           bool              `yaml:"enabled" json:"enabled"`
-	LogLevel          string            `yaml:"log_level" json:"log_level"` // debug, info, warn, error
-	IncludeEvents     []string          `yaml:"include_events,omitempty" json:"include_events,omitempty"`
-	ExcludeEvents     []string          `yaml:"exclude_events,omitempty" json:"exclude_events,omitempty"`
-	RetentionDays     int               `yaml:"retention_days" json:"retention_days"`
-	StorageBackend    string            `yaml:"storage_backend" json:"storage_backend"` // file, database, external
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	LogLevel       string   `yaml:"log_level" json:"log_level"` // debug, info, warn, error
+	IncludeEvents  []string `yaml:"include_events,omitempty" json:"include_events,omitempty"`
+	ExcludeEvents  []string `yaml:"exclude_events,omitempty" json:"exclude_events,omitempty"`
+	RetentionDays  int      `yaml:"retention_days" json:"retention_days"`
+	StorageBackend string   `yaml:"storage_backend" json:"storage_backend"` // file, database, external
 }
 
 // NonFunctional define requisitos não funcionais
@@ -386,9 +389,9 @@ type NonFunctional struct {
 
 // PerformanceRequirements define requisitos de performance
 type PerformanceRequirements struct {
-	MaxResponseTimeMs int `yaml:"max_response_time_ms" json:"max_response_time_ms"`
+	MaxResponseTimeMs  int `yaml:"max_response_time_ms" json:"max_response_time_ms"`
 	MaxConcurrentUsers int `yaml:"max_concurrent_users" json:"max_concurrent_users"`
-	ThroughputRPS     int `yaml:"throughput_rps" json:"throughput_rps"`
+	ThroughputRPS      int `yaml:"throughput_rps" json:"throughput_rps"`
 }
 
 // ReliabilityRequirements define requisitos de confiabilidade
@@ -400,16 +403,76 @@ type ReliabilityRequirements struct {
 
 // ScalabilityRequirements define requisitos de escalabilidade
 type ScalabilityRequirements struct {
-	AutoScaling     bool     `yaml:"auto_scaling" json:"auto_scaling"`
-	MinInstances    int      `yaml:"min_instances" json:"min_instances"`
-	MaxInstances    int      `yaml:"max_instances" json:"max_instances"`
-	ScalingMetrics  []string `yaml:"scaling_metrics" json:"scaling_metrics"`
+	AutoScaling    bool     `yaml:"auto_scaling" json:"auto_scaling"`
+	MinInstances   int      `yaml:"min_instances" json:"min_instances"`
+	MaxInstances   int      `yaml:"max_instances" json:"max_instances"`
+	ScalingMetrics []string `yaml:"scaling_metrics" json:"scaling_metrics"`
 }
 
 // ComplianceRequirements define requisitos de conformidade
 type ComplianceRequirements struct {
 	Standards []string `yaml:"standards" json:"standards"` // GDPR, HIPAA, SOC2, etc.
 	Region    string   `yaml:"region" json:"region"`
+}
+
+type WorkflowConfig struct {
+	Entity       string          `yaml:"entity" json:"entity"`
+	InitialState string          `yaml:"initial_state" json:"initial_state"`
+	States       []WorkflowState `yaml:"states" json:"states"`
+}
+
+type WorkflowState struct {
+	ID          string               `yaml:"id" json:"id"`
+	Description string               `yaml:"description" json:"description"`
+	Transitions []WorkflowTransition `yaml:"transitions" json:"transitions"`
+}
+
+type WorkflowTransition struct {
+	To           string   `yaml:"to" json:"to"`
+	Action       string   `yaml:"action" json:"action"`
+	AllowedRoles []string `yaml:"allowed_roles" json:"allowed_roles"`
+}
+
+func (w WorkflowConfig) ToFSMConfig() interface{} {
+	states := make(map[string]interface{})
+	for _, s := range w.States {
+		transitions := make([]map[string]interface{}, len(s.Transitions))
+		for i, t := range s.Transitions {
+			transitions[i] = map[string]interface{}{
+				"to":            t.To,
+				"action":        t.Action,
+				"allowed_roles": t.AllowedRoles,
+			}
+		}
+		states[s.ID] = map[string]interface{}{
+			"id":          s.ID,
+			"transitions": transitions,
+		}
+	}
+	return map[string]interface{}{
+		"entity":        w.Entity,
+		"initial_state": w.InitialState,
+		"states":        states,
+	}
+}
+
+func (w WorkflowConfig) ToFSMStates() map[string]interface{} {
+	states := make(map[string]interface{})
+	for _, s := range w.States {
+		transitions := make([]map[string]interface{}, len(s.Transitions))
+		for i, t := range s.Transitions {
+			transitions[i] = map[string]interface{}{
+				"to":            t.To,
+				"action":        t.Action,
+				"allowed_roles": t.AllowedRoles,
+			}
+		}
+		states[s.ID] = map[string]interface{}{
+			"id":          s.ID,
+			"transitions": transitions,
+		}
+	}
+	return states
 }
 
 // Parser gerencia o parsing e validação de manifests
