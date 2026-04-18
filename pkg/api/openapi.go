@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"strings"
 
@@ -203,13 +204,10 @@ func (g *Generator) endpointToPath(api manifest.APIConfig, ep manifest.Endpoint)
 		Responses:   make(map[string]OpenAPIResponse),
 	}
 
-	path.Parameters = g.extractParameters(ep.Path)
+	path.Parameters = g.extractParameters(ep)
 
 	if ep.Input != nil && ep.Input.Entity != "" {
 		schemaRef := "#/components/schemas/" + ep.Input.Entity
-		if len(ep.Input.Fields) > 0 {
-			schemaRef = "#/components/schemas/" + ep.Input.Entity
-		}
 
 		path.RequestBody = &OpenAPIRequestBody{
 			Required: true,
@@ -323,12 +321,14 @@ func containsMethod(methods []string, method string) bool {
 	return false
 }
 
-func (g *Generator) extractParameters(path string) []OpenAPIParameter {
+func (g *Generator) extractParameters(ep manifest.Endpoint) []OpenAPIParameter {
 	var params []OpenAPIParameter
+	hasPathParam := false
 
-	parts := strings.Split(strings.Trim(path, "/"), "/")
+	parts := strings.Split(strings.Trim(ep.Path, "/"), "/")
 	for _, part := range parts {
 		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			hasPathParam = true
 			paramName := strings.Trim(part, "{}")
 			params = append(params, OpenAPIParameter{
 				Name:        paramName,
@@ -340,21 +340,23 @@ func (g *Generator) extractParameters(path string) []OpenAPIParameter {
 		}
 	}
 
-	params = append(params, OpenAPIParameter{
-		Name:        "limit",
-		In:          "query",
-		Required:    false,
-		Description: "Maximum number of results to return",
-		Schema:      OpenAPISchema{Type: "integer"},
-	})
+	if strings.ToUpper(ep.Method) == "GET" && !hasPathParam {
+		params = append(params, OpenAPIParameter{
+			Name:        "limit",
+			In:          "query",
+			Required:    false,
+			Description: "Maximum number of results to return",
+			Schema:      OpenAPISchema{Type: "integer"},
+		})
 
-	params = append(params, OpenAPIParameter{
-		Name:        "offset",
-		In:          "query",
-		Required:    false,
-		Description: "Number of results to skip",
-		Schema:      OpenAPISchema{Type: "integer"},
-	})
+		params = append(params, OpenAPIParameter{
+			Name:        "offset",
+			In:          "query",
+			Required:    false,
+			Description: "Number of results to skip",
+			Schema:      OpenAPISchema{Type: "integer"},
+		})
+	}
 
 	return params
 }
@@ -367,10 +369,11 @@ func (g *Generator) serveOpenAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Generator) serveDocs(w http.ResponseWriter, r *http.Request) {
-	html := `<!DOCTYPE html>
+	safeTitle := html.EscapeString(g.manifest.Metadata.Name)
+	page := `<!DOCTYPE html>
 <html>
 <head>
-    <title>` + g.manifest.Metadata.Name + ` API Documentation</title>
+    <title>` + safeTitle + ` API Documentation</title>
     <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@4/swagger-ui.css">
     <style>
         body { margin: 0; padding: 0; }
@@ -396,5 +399,5 @@ func (g *Generator) serveDocs(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>`
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+	w.Write([]byte(page))
 }

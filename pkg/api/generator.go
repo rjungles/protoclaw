@@ -348,9 +348,24 @@ func (g *Generator) extractIDFromPath(requestPath, pattern string) string {
 	requestParts := strings.Split(strings.Trim(requestPath, "/"), "/")
 	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
 
+	if len(requestParts) < len(patternParts) {
+		offset := len(requestParts) - len(patternParts)
+		if offset < 0 {
+			return ""
+		}
+	}
+
+	startOffset := len(requestParts) - len(patternParts)
+	if startOffset < 0 {
+		startOffset = 0
+	}
+
 	for i, p := range patternParts {
-		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") && i < len(requestParts) {
-			return requestParts[i]
+		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
+			idx := startOffset + i
+			if idx < len(requestParts) {
+				return requestParts[idx]
+			}
 		}
 	}
 

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -100,12 +99,11 @@ func (r *Repository) Create(ctx context.Context, entityName string, data map[str
 		return 0, fmt.Errorf("entity %s not found", entityName)
 	}
 
-	data["created_at"] = time.Now()
-	data["updated_at"] = time.Now()
+	now := time.Now()
 
-	columns := make([]string, 0, len(data))
-	placeholders := make([]string, 0, len(data))
-	values := make([]interface{}, 0, len(data))
+	columns := make([]string, 0, len(data)+2)
+	placeholders := make([]string, 0, len(data)+2)
+	values := make([]interface{}, 0, len(data)+2)
 
 	for col, val := range data {
 		if col == "id" {
@@ -114,6 +112,17 @@ func (r *Repository) Create(ctx context.Context, entityName string, data map[str
 		columns = append(columns, toSnakeCase(col))
 		placeholders = append(placeholders, "?")
 		values = append(values, val)
+	}
+
+	if _, ok := data["created_at"]; !ok {
+		columns = append(columns, "created_at")
+		placeholders = append(placeholders, "?")
+		values = append(values, now)
+	}
+	if _, ok := data["updated_at"]; !ok {
+		columns = append(columns, "updated_at")
+		placeholders = append(placeholders, "?")
+		values = append(values, now)
 	}
 
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
@@ -132,10 +141,8 @@ func (r *Repository) Create(ctx context.Context, entityName string, data map[str
 func (r *Repository) Update(ctx context.Context, entityName string, id interface{}, data map[string]interface{}) error {
 	tableName := toSnakeCase(entityName)
 
-	data["updated_at"] = time.Now()
-
-	setClauses := make([]string, 0, len(data))
-	values := make([]interface{}, 0, len(data)+1)
+	setClauses := make([]string, 0, len(data)+1)
+	values := make([]interface{}, 0, len(data)+2)
 
 	for col, val := range data {
 		if col == "id" {
@@ -144,6 +151,12 @@ func (r *Repository) Update(ctx context.Context, entityName string, id interface
 		setClauses = append(setClauses, fmt.Sprintf("%s = ?", toSnakeCase(col)))
 		values = append(values, val)
 	}
+
+	if _, ok := data["updated_at"]; !ok {
+		setClauses = append(setClauses, "updated_at = ?")
+		values = append(values, time.Now())
+	}
+
 	values = append(values, id)
 
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = ?",
@@ -208,8 +221,4 @@ func toSnakeCase(s string) string {
 		result = append(result, []rune(strings.ToLower(string(r)))...)
 	}
 	return string(result)
-}
-
-func (r *Repository) MarshalJSON(v interface{}) ([]byte, error) {
-	return json.Marshal(v)
 }

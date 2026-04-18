@@ -120,3 +120,39 @@ func (f *FSM) ListTransitions(state State, userRoles []string) []Transition {
 	
 	return validTransitions
 }
+
+func (f *FSM) ListStates() []string {
+	states := make([]string, 0, len(f.config.States))
+	for s := range f.config.States {
+		states = append(states, string(s))
+	}
+	slices.Sort(states)
+	return states
+}
+
+func (f *FSM) InitialState() State {
+	return f.config.InitialState
+}
+
+func (f *FSM) FindTransition(current State, action Action) *Transition {
+	config, exists := f.config.States[current]
+	if !exists {
+		return nil
+	}
+
+	for i := range config.Transitions {
+		if config.Transitions[i].Action == action {
+			return &config.Transitions[i]
+		}
+	}
+	return nil
+}
+
+func (f *FSM) Transition(userRoles []string, action Action) (State, error) {
+	current := f.config.InitialState
+	allowed, targetState, err := f.CanTransition(current, action, userRoles)
+	if err != nil || !allowed {
+		return current, fmt.Errorf("transition not allowed: %w", err)
+	}
+	return targetState, nil
+}
