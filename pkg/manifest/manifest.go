@@ -425,6 +425,29 @@ type WorkflowState struct {
 	ID          string               `yaml:"id" json:"id"`
 	Description string               `yaml:"description" json:"description"`
 	Transitions []WorkflowTransition `yaml:"transitions" json:"transitions"`
+	Guards      []WorkflowGuard      `yaml:"guards,omitempty" json:"guards,omitempty"`
+	OnEnter     []WorkflowAction     `yaml:"on_enter,omitempty" json:"on_enter,omitempty"`
+	OnExit      []WorkflowAction     `yaml:"on_exit,omitempty" json:"on_exit,omitempty"`
+	Timeout     *WorkflowTimeout     `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+type WorkflowGuard struct {
+	Field     string      `yaml:"field" json:"field"`
+	Condition string      `yaml:"condition" json:"condition"`
+	Value     interface{} `yaml:"value,omitempty" json:"value,omitempty"`
+}
+
+type WorkflowAction struct {
+	Action  string                 `yaml:"action" json:"action"`
+	Target  string                 `yaml:"target,omitempty" json:"target,omitempty"`
+	Message string                 `yaml:"message,omitempty" json:"message,omitempty"`
+	Config  map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
+}
+
+type WorkflowTimeout struct {
+	Duration      string `yaml:"duration" json:"duration"`
+	TransitionTo  string `yaml:"transition_to" json:"transition_to"`
+	Action        string `yaml:"action" json:"action"`
 }
 
 type WorkflowTransition struct {

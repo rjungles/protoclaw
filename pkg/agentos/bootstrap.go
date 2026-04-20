@@ -251,6 +251,11 @@ func (b *Bootstrapper) createRuleExecutor(instance *SystemInstance) error {
 }
 
 func (b *Bootstrapper) createWorkflowEngines(instance *SystemInstance) error {
+	if len(instance.Manifest.Workflows) == 0 {
+		instance.WorkflowEngines = make(map[string]*workflow.FSM)
+		return nil
+	}
+
 	for _, wf := range instance.Manifest.Workflows {
 		states := make(map[workflow.State]workflow.StateConfig)
 		for _, s := range wf.States {

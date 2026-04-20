@@ -29,3 +29,5 @@ htmlcov/
 *.test
 *.prof
 ```
+# Added by code-review-graph
+.code-review-graph/
