@@ -56,7 +56,7 @@ func (s *MemoryActorStore) Provision(actor manifest.Actor) (*ActorCredential, er
 	defer s.mu.Unlock()
 
 	if _, exists := s.actors[actor.ID]; exists {
-		return nil, fmt.Errorf("actor %s already provisioned: %w", actor.ID, ErrActorExists)
+		return nil, ErrActorExists
 	}
 
 	apiKey, apiKeyHash := generateAPIKey()
@@ -172,7 +172,7 @@ func (s *DBActorStore) Provision(actor manifest.Actor) (*ActorCredential, error)
 		return nil, fmt.Errorf("failed to check existing actor: %w", err)
 	}
 	if existing > 0 {
-		return nil, fmt.Errorf("actor %s already provisioned: %w", actor.ID, ErrActorExists)
+		return nil, ErrActorExists
 	}
 
 	apiKey, apiKeyHash := generateAPIKey()

@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/api"
@@ -16,7 +18,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/manifest"
 	"github.com/sipeed/picoclaw/pkg/workflow"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 type BootstrapConfig struct {
@@ -172,7 +174,7 @@ func (b *Bootstrapper) openDatabase(ctx context.Context, instance *SystemInstanc
 
 	switch driver {
 	case "sqlite":
-		db, err = sql.Open("sqlite3", connection)
+		db, err = sql.Open("sqlite", connection)
 	case "postgres":
 		db, err = sql.Open("postgres", connection)
 	case "mysql":
@@ -220,7 +222,7 @@ func (b *Bootstrapper) provisionActors(instance *SystemInstance) error {
 	for _, actor := range instance.Manifest.Actors {
 		cred, err := instance.ActorStore.Provision(actor)
 		if err != nil {
-			if err == ErrActorExists {
+			if errors.Is(err, ErrActorExists) {
 				continue
 			}
 			return fmt.Errorf("failed to provision actor %s: %w", actor.ID, err)
@@ -313,15 +315,26 @@ func (b *Bootstrapper) mountHTTPMux(instance *SystemInstance) {
 
 	authMiddleware := NewAuthMiddleware(instance.ActorStore)
 
-	systemMux := http.NewServeMux()
-	systemMux.HandleFunc("GET /_system/info", instance.serveSystemInfo)
-	systemMux.HandleFunc("GET /_system/actors", instance.serveListActors)
-	systemMux.HandleFunc("GET /_system/operations", instance.serveListOperations)
-	systemMux.HandleFunc("GET /_health", instance.serveHealth)
-
+	// Use a single mux with proper handler wrapping
 	compositeMux := http.NewServeMux()
-	compositeMux.Handle("/", authMiddleware.Wrap(apiMux))
-	compositeMux.Handle("/_system/", systemMux)
+
+	// Mount system endpoints first (they take precedence)
+	compositeMux.HandleFunc("GET /_system/info", instance.serveSystemInfo)
+	compositeMux.HandleFunc("GET /_system/actors", instance.serveListActors)
+	compositeMux.HandleFunc("GET /_system/operations", instance.serveListOperations)
+	compositeMux.HandleFunc("GET /_health", instance.serveHealth)
+
+	// Mount API endpoints with auth middleware
+	// Wrap apiMux.ServeHTTP to maintain the ServeHTTP interface
+	compositeMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Check if this is a system endpoint (should not reach here due to pattern precedence)
+		if strings.HasPrefix(r.URL.Path, "/_system/") || r.URL.Path == "/_health" {
+			http.NotFound(w, r)
+			return
+		}
+		// Apply auth middleware and then serve via apiMux
+		authMiddleware.Wrap(apiMux).ServeHTTP(w, r)
+	})
 
 	instance.HTTPMux = compositeMux
 }
