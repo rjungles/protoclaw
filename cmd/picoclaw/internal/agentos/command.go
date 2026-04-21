@@ -23,7 +23,11 @@ func NewAgentosCommand() *cobra.Command {
 		Short: "AgentOS - Sistema Operacional de Agentes",
 		Long: `AgentOS é um Sistema Operacional de Agentes que transforma o PicoClaw
 em uma plataforma capaz de gerar automaticamente infraestrutura completa
-a partir de um manifesto declarativo YAML/JSON.`,
+a partir de um manifesto declarativo YAML/JSON.
+
+Cada sistema gerenciado pelo AgentOS é independente e pode coexistir
+no mesmo diretório de dados. Use --system para selecionar qual sistema
+operar em comandos que suportam múltiplos sistemas.`,
 	}
 
 	cmd.AddCommand(
@@ -34,11 +38,24 @@ a partir de um manifesto declarativo YAML/JSON.`,
 		newStatusCommand(),
 		newLogsCommand(),
 		newDiffCommand(),
+		newListCommand(),
 		newVersionsCommand(),
 		newConfigCommand(),
 	)
 
 	return cmd
+}
+
+// getDataDir returns the data directory, using default if not specified
+func getDataDir(flag string) string {
+	if flag != "" {
+		return flag
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(homeDir, "picoclaw-data")
 }
 
 // newInitCommand cria o comando para inicializar a estrutura do AgentOS
@@ -50,13 +67,7 @@ func newInitCommand() *cobra.Command {
 		Short: "Inicializa a estrutura de dados do AgentOS",
 		Long:  `Cria os diretórios necessários para o funcionamento do AgentOS.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
-				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
-			}
+			dataDir = getDataDir(dataDir)
 
 			dirs := []string{
 				filepath.Join(dataDir, "manifests"),
@@ -72,32 +83,7 @@ func newInitCommand() *cobra.Command {
 				fmt.Printf("Created: %s\n", dir)
 			}
 
-			// Create sample config file
-			configPath := filepath.Join(dataDir, "config.yaml")
-			if _, err := os.Stat(configPath); os.IsNotExist(err) {
-				configContent := `# Configuracao do PicoClaw com AgentOS
-mode: agentos
-
-agentos:
-  manifest_path: ` + filepath.Join(dataDir, "manifests", "system.yaml") + `
-  database:
-    driver: sqlite
-    connection: ` + filepath.Join(dataDir, "db", "agentos.db") + `
-  data_dir: ` + dataDir + `
-  auto_evolve: true
-  enable_api: true
-  enable_mcp: true
-  api:
-    host: 0.0.0.0
-    port: 8080
-`
-				if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-					return fmt.Errorf("failed to create config file: %w", err)
-				}
-				fmt.Printf("Created: %s\n", configPath)
-			}
-
-			// Create sample manifest
+			// Create sample hello-world manifest
 			manifestPath := filepath.Join(dataDir, "manifests", "hello-world.yaml")
 			if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 				manifestContent := `metadata:
@@ -149,8 +135,8 @@ integrations:
 			fmt.Println("\nAgentOS initialized successfully!")
 			fmt.Printf("Data directory: %s\n", dataDir)
 			fmt.Println("\nNext steps:")
-			fmt.Printf("  1. Edit your manifest: %s\n", filepath.Join(dataDir, "manifests", "system.yaml"))
-			fmt.Printf("  2. Run bootstrap: picoclaw agentos bootstrap --manifest %s\n", filepath.Join(dataDir, "manifests", "system.yaml"))
+			fmt.Println("  1. Place your manifest files in:", filepath.Join(dataDir, "manifests"))
+			fmt.Println("  2. Run: picoclaw agentos bootstrap --manifest <your-manifest.yaml>")
 
 			return nil
 		},
@@ -168,53 +154,37 @@ func newBootstrapCommand() *cobra.Command {
 		dataDir      string
 		dbDriver     string
 		dbConnection string
+		systemName   string
 		interactive  bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Materializa o sistema descrito no manifesto",
-		Long:  `Executa o pipeline de bootstrap que cria toda a infraestrutura do sistema.`,
+		Long:  `Executa o pipeline de bootstrap que cria toda a infraestrutura do sistema.
+
+Se o mesmo diretório de dados já contém outros sistemas, um novo banco de dados
+será criado automaticamente (baseado no nome do sistema no manifesto).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			dataDir = getDataDir(dataDir)
+
 			if interactive {
 				reader := bufio.NewReader(os.Stdin)
 
-				fmt.Print("Manifest path [manifests/system.yaml]: ")
+				fmt.Print("Manifest path: ")
 				input, _ := reader.ReadString('\n')
-				input = strings.TrimSpace(input)
-				if input != "" {
-					manifestPath = input
-				}
+				manifestPath = strings.TrimSpace(input)
 
-				fmt.Print("Data directory [~/picoclaw-data]: ")
+				fmt.Print("System name (optional, uses manifest name if empty): ")
 				input, _ = reader.ReadString('\n')
-				input = strings.TrimSpace(input)
-				if input != "" {
-					dataDir = input
-				}
-
-				fmt.Print("Database driver [sqlite]: ")
-				input, _ = reader.ReadString('\n')
-				input = strings.TrimSpace(input)
-				if input != "" {
-					dbDriver = input
-				}
+				systemName = strings.TrimSpace(input)
 			}
 
-			// Resolve paths
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
-				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
-			}
-
+			// Resolve manifest path
 			if manifestPath == "" {
-				manifestPath = filepath.Join(dataDir, "manifests", "system.yaml")
+				return fmt.Errorf("--manifest is required")
 			}
 
-			// Make manifest path absolute if relative
 			if !filepath.IsAbs(manifestPath) {
 				manifestPath = filepath.Join(dataDir, manifestPath)
 			}
@@ -224,33 +194,64 @@ func newBootstrapCommand() *cobra.Command {
 				return fmt.Errorf("manifest not found: %s", manifestPath)
 			}
 
-			fmt.Println("=== Bootstrap Pipeline ===")
-			fmt.Printf("Manifest: %s\n", manifestPath)
-			fmt.Printf("Data Directory: %s\n", dataDir)
-			fmt.Println()
-
-			// Load and validate manifest first
-			fmt.Println("[1/12] Load Manifest...")
+			// Load manifest to get system name
 			m, err := manifest.ParseFile(manifestPath)
 			if err != nil {
 				return fmt.Errorf("failed to parse manifest: %w", err)
 			}
-			fmt.Println("       Parse e validacao")
 
-			fmt.Println("[2/12] Validate...")
+			// Validate manifest
 			parser := &manifest.Parser{}
 			if err := parser.Validate(m); err != nil {
 				return fmt.Errorf("validation failed: %w", err)
 			}
-			fmt.Println("       Consistencia verificada")
 
-			// Configure database
+			// Use manifest name if system name not provided
+			if systemName == "" {
+				systemName = m.Metadata.Name
+			}
+
+			// Ensure db directory exists
+			dbDir := filepath.Join(dataDir, "db")
+			if err := os.MkdirAll(dbDir, 0755); err != nil {
+				return fmt.Errorf("failed to create db directory: %w", err)
+			}
+
+			// Configure database connection
 			if dbDriver == "" {
 				dbDriver = "sqlite"
 			}
 			if dbConnection == "" {
-				dbConnection = filepath.Join(dataDir, "db", fmt.Sprintf("%s.db", m.Metadata.Name))
+				// Use system name for database file
+				dbConnection = filepath.Join(dbDir, fmt.Sprintf("%s.db", systemName))
 			}
+
+			// Check if database already exists for another system
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			// Check for conflicts
+			for name, sys := range registry.Systems {
+				if name == systemName {
+					fmt.Printf("Warning: System '%s' already exists. It will be updated.\n", systemName)
+					break
+				}
+				if sys.DBConnection == dbConnection {
+					return fmt.Errorf("database conflict: '%s' is already used by system '%s'", dbConnection, name)
+				}
+			}
+
+			fmt.Println("=== Bootstrap Pipeline ===")
+			fmt.Printf("System: %s\n", systemName)
+			fmt.Printf("Manifest: %s\n", manifestPath)
+			fmt.Printf("Data Directory: %s\n", dataDir)
+			fmt.Printf("Database: %s\n", dbConnection)
+			if registry.GetSystemCount() > 0 {
+				fmt.Printf("Existing Systems: %d\n", registry.GetSystemCount())
+			}
+			fmt.Println()
 
 			cfg := agentos.BootstrapConfig{
 				ManifestPath: manifestPath,
@@ -259,14 +260,14 @@ func newBootstrapCommand() *cobra.Command {
 				DataDir:      dataDir,
 			}
 
-			fmt.Println("[3/12] Open Database...")
-			fmt.Printf("       Driver: %s\n", dbDriver)
-
 			bootstrapper := agentos.NewBootstrapper(cfg)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
+			fmt.Println("[1/12] Load Manifest...")
+			fmt.Println("[2/12] Validate...")
+			fmt.Println("[3/12] Open Database...")
 			fmt.Println("[4/12] Run Migrations...")
 			fmt.Println("[5/12] Provision Actors...")
 			fmt.Println("[6/12] Build Catalog...")
@@ -295,9 +296,20 @@ func newBootstrapCommand() *cobra.Command {
 			fmt.Printf("Operations: %d\n", len(instance.Catalog.ListAll()))
 			fmt.Println()
 
-			// Store instance reference for potential serve command
-			if err := saveInstanceState(dataDir, manifestPath, dbConnection); err != nil {
-				fmt.Printf("Warning: failed to save instance state: %v\n", err)
+			// Register system
+			registry.RegisterSystem(systemName, manifestPath, dbConnection, dataDir)
+			if err := registry.Save(dataDir); err != nil {
+				return fmt.Errorf("failed to save registry: %w", err)
+			}
+
+			fmt.Printf("System '%s' registered successfully!\n", systemName)
+			if registry.GetSystemCount() > 1 {
+				fmt.Println("\nOther systems in this data directory:")
+				for name := range registry.Systems {
+					if name != systemName {
+						fmt.Printf("  - %s\n", name)
+					}
+				}
 			}
 
 			return nil
@@ -307,8 +319,11 @@ func newBootstrapCommand() *cobra.Command {
 	cmd.Flags().StringVar(&manifestPath, "manifest", "", "Path to the manifest YAML file")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Data directory for AgentOS")
 	cmd.Flags().StringVar(&dbDriver, "db-driver", "sqlite", "Database driver (sqlite, postgres, mysql)")
-	cmd.Flags().StringVar(&dbConnection, "db-connection", "", "Database connection string")
+	cmd.Flags().StringVar(&dbConnection, "db-connection", "", "Database connection string (auto-generated if not set)")
+	cmd.Flags().StringVar(&systemName, "system", "", "System name (uses manifest name if not set)")
 	cmd.Flags().BoolVar(&interactive, "interactive", false, "Interactive mode")
+
+	_ = cmd.MarkFlagRequired("manifest")
 
 	return cmd
 }
@@ -316,54 +331,61 @@ func newBootstrapCommand() *cobra.Command {
 // newServeCommand cria o comando para iniciar o servidor
 func newServeCommand() *cobra.Command {
 	var (
-		dataDir      string
-		manifestPath string
-		port         int
-		host         string
+		dataDir    string
+		port       int
+		host       string
+		systemName string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Inicia o servidor HTTP do sistema AgentOS",
-		Long:  `Inicia o servidor HTTP com API REST e endpoints de sistema.`,
+		Long:  `Inicia o servidor HTTP com API REST e endpoints de sistema.
+
+Se múltiplos sistemas existem no diretório de dados, use --system
+para selecionar qual sistema servir. Se não especificado, o sistema
+padrão será usado.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Load saved state or use defaults
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
+			dataDir = getDataDir(dataDir)
+
+			// Load registry
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			// Handle multiple systems
+			if registry.GetSystemCount() == 0 {
+				return fmt.Errorf("no systems found in %s\nRun 'picoclaw agentos bootstrap' first", dataDir)
+			}
+
+			// Get target system
+			system, err := registry.GetSystem(systemName)
+			if err != nil {
+				// Show available systems
+				fmt.Println("Available systems:")
+				for name, info := range registry.Systems {
+					prefix := "  "
+					if name == registry.Default {
+						prefix = "* "
+					}
+					fmt.Printf("%s%s (manifest: %s)\n", prefix, name, info.ManifestPath)
 				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
-			}
-
-			// Try to load saved state
-			state, err := loadInstanceState(dataDir)
-			if err == nil && manifestPath == "" {
-				manifestPath = state.ManifestPath
-			}
-
-			if manifestPath == "" {
-				manifestPath = filepath.Join(dataDir, "manifests", "system.yaml")
+				fmt.Println("\nUse --system <name> to select a system")
+				return err
 			}
 
 			// Verify manifest exists
-			if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-				return fmt.Errorf("manifest not found: %s\nRun 'picoclaw agentos bootstrap' first", manifestPath)
+			if _, err := os.Stat(system.ManifestPath); os.IsNotExist(err) {
+				return fmt.Errorf("manifest not found: %s\nSystem may need to be re-registered", system.ManifestPath)
 			}
 
 			// Bootstrap the system
 			cfg := agentos.BootstrapConfig{
-				ManifestPath: manifestPath,
+				ManifestPath: system.ManifestPath,
 				DBDriver:     "sqlite",
-				DBConnection: state.DBConnection,
+				DBConnection: system.DBConnection,
 				DataDir:      dataDir,
-			}
-
-			if cfg.DBConnection == "" {
-				m, _ := manifest.ParseFile(manifestPath)
-				if m != nil {
-					cfg.DBConnection = filepath.Join(dataDir, "db", fmt.Sprintf("%s.db", m.Metadata.Name))
-				}
 			}
 
 			bootstrapper := agentos.NewBootstrapper(cfg)
@@ -382,8 +404,10 @@ func newServeCommand() *cobra.Command {
 			}
 
 			fmt.Printf("=== Server Starting ===\n")
+			fmt.Printf("System: %s\n", system.Name)
 			fmt.Printf("Name: %s v%s\n", instance.Manifest.Metadata.Name, instance.Manifest.Metadata.Version)
 			fmt.Printf("Address: http://%s\n", addr)
+			fmt.Printf("Database: %s\n", system.DBConnection)
 			fmt.Println()
 			fmt.Println("=== API Endpoints ===")
 			for _, op := range instance.Catalog.ListAll() {
@@ -395,6 +419,15 @@ func newServeCommand() *cobra.Command {
 			fmt.Println("  GET /_system/actors - List actors")
 			fmt.Println("  GET /_system/operations - List all operations")
 			fmt.Println("  GET /_health - Health check")
+			if registry.HasMultipleSystems() {
+				fmt.Println("\nNote: Multiple systems are registered.")
+				fmt.Println("      Other systems:")
+				for name := range registry.Systems {
+					if name != system.Name {
+						fmt.Printf("      - %s\n", name)
+					}
+				}
+			}
 			fmt.Println()
 			fmt.Println("Press Ctrl+C to stop")
 
@@ -433,9 +466,9 @@ func newServeCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Data directory for AgentOS")
-	cmd.Flags().StringVar(&manifestPath, "manifest", "", "Path to the manifest YAML file")
 	cmd.Flags().IntVar(&port, "port", 8080, "Port to listen on")
 	cmd.Flags().StringVar(&host, "host", "0.0.0.0", "Host to bind to")
+	cmd.Flags().StringVar(&systemName, "system", "", "System to serve (uses default if not set)")
 
 	return cmd
 }
@@ -445,9 +478,9 @@ func newValidateCommand() *cobra.Command {
 	var manifestPath string
 
 	cmd := &cobra.Command{
-		Use:   "validate",
+		Use:   "validate [manifest]",
 		Short: "Valida um manifesto YAML/JSON",
-		Long:  `Valida a estrutura e semantica de um manifesto do AgentOS.`,
+		Long:  `Valida a estrutura e semântica de um manifesto do AgentOS.`,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -475,7 +508,16 @@ func newValidateCommand() *cobra.Command {
 				return fmt.Errorf("validation error: %w", err)
 			}
 
-			fmt.Println("✓ Manifest is valid!")
+			// Print warnings if any
+			warnings := parser.GetWarnings()
+			if len(warnings) > 0 {
+				fmt.Println("\nWarnings:")
+				for _, w := range warnings {
+					fmt.Printf("  - %s\n", w)
+				}
+			}
+
+			fmt.Println("\n✓ Manifest is valid!")
 			fmt.Printf("  Name: %s\n", m.Metadata.Name)
 			fmt.Printf("  Version: %s\n", m.Metadata.Version)
 			fmt.Printf("  Actors: %d\n", len(m.Actors))
@@ -495,51 +537,75 @@ func newValidateCommand() *cobra.Command {
 // newStatusCommand cria o comando para verificar status do sistema
 func newStatusCommand() *cobra.Command {
 	var (
-		dataDir string
-		host    string
-		port    int
+		dataDir    string
+		host       string
+		port       int
+		systemName string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Verifica o status do sistema AgentOS",
-		Long:  `Conecta ao servidor e exibe informacoes de saude e status do sistema.`,
+		Long:  `Conecta ao servidor e exibe informações de saúde e status do sistema.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
+			dataDir = getDataDir(dataDir)
+
+			// Load registry
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			// Show status for all systems or specific one
+			if systemName == "" {
+				// Show registry overview
+				fmt.Println("=== AgentOS Registry ===")
+				fmt.Printf("Data Directory: %s\n", dataDir)
+				fmt.Printf("Systems: %d\n", registry.GetSystemCount())
+
+				if registry.GetSystemCount() == 0 {
+					fmt.Println("\nNo systems registered.")
+					fmt.Println("Run 'picoclaw agentos bootstrap' to create a system.")
+					return nil
 				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
-			}
 
-			// Try to get server URL from saved state or use default
-			state, err := loadInstanceState(dataDir)
-			if err != nil {
-				// Use command line flags
-				_ = state
-			}
+				fmt.Printf("\nDefault System: %s\n", registry.Default)
+				fmt.Println("\nRegistered Systems:")
+				for name, sys := range registry.Systems {
+					defaultMark := ""
+					if name == registry.Default {
+						defaultMark = " (default)"
+					}
+					fmt.Printf("\n  %s%s\n", name, defaultMark)
+					fmt.Printf("    Manifest: %s\n", sys.ManifestPath)
+					fmt.Printf("    Database: %s\n", sys.DBConnection)
+					fmt.Printf("    Created: %s\n", sys.CreatedAt.Format("2006-01-02 15:04:05"))
+				}
+			} else {
+				// Show specific system status
+				system, err := registry.GetSystem(systemName)
+				if err != nil {
+					return err
+				}
 
-			serverURL := fmt.Sprintf("http://%s:%d", host, port)
-			if state.ServerURL != "" {
-				serverURL = state.ServerURL
-			}
+				serverURL := fmt.Sprintf("http://%s:%d", host, port)
+				if system.ServerURL != "" {
+					serverURL = system.ServerURL
+				}
 
-			// Check health endpoint
-			resp, err := http.Get(serverURL + "/_health")
-			if err != nil {
-				return fmt.Errorf("server unreachable: %w\nIs the server running? (picoclaw agentos serve)", err)
-			}
-			defer resp.Body.Close()
+				fmt.Printf("=== System Status: %s ===\n", systemName)
+				fmt.Printf("Manifest: %s\n", system.ManifestPath)
+				fmt.Printf("Database: %s\n", system.DBConnection)
+				fmt.Printf("Server: %s\n", serverURL)
 
-			body := make([]byte, 1024)
-			n, _ := resp.Body.Read(body)
-
-			fmt.Println("=== System Status ===")
-			fmt.Printf("Server: %s\n", serverURL)
-			fmt.Printf("Status: %d %s\n", resp.StatusCode, resp.Status)
-			if n > 0 {
-				fmt.Printf("Response: %s\n", string(body[:n]))
+				// Check health endpoint
+				resp, err := http.Get(serverURL + "/_health")
+				if err != nil {
+					fmt.Printf("Status: NOT RUNNING (%v)\n", err)
+				} else {
+					defer resp.Body.Close()
+					fmt.Printf("Status: Running (HTTP %d)\n", resp.StatusCode)
+				}
 			}
 
 			return nil
@@ -549,6 +615,57 @@ func newStatusCommand() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Data directory for AgentOS")
 	cmd.Flags().StringVar(&host, "host", "localhost", "Server host")
 	cmd.Flags().IntVar(&port, "port", 8080, "Server port")
+	cmd.Flags().StringVar(&systemName, "system", "", "System to check status for (shows all if not set)")
+
+	return cmd
+}
+
+// newListCommand cria o comando para listar sistemas
+func newListCommand() *cobra.Command {
+	var dataDir string
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "Lista todos os sistemas registrados",
+		Long:  `Exibe uma lista de todos os sistemas AgentOS registrados no diretório de dados.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dataDir = getDataDir(dataDir)
+
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			if registry.GetSystemCount() == 0 {
+				fmt.Println("No systems registered.")
+				fmt.Println("Run 'picoclaw agentos bootstrap' to create your first system.")
+				return nil
+			}
+
+			fmt.Printf("Systems in %s:\n\n", dataDir)
+			fmt.Printf("%-20s %-30s %s\n", "NAME", "DATABASE", "CREATED")
+			fmt.Println(strings.Repeat("-", 80))
+
+			for name, sys := range registry.Systems {
+				defaultMark := ""
+				if name == registry.Default {
+					defaultMark = " *"
+				}
+				dbFile := filepath.Base(sys.DBConnection)
+				fmt.Printf("%-20s %-30s %s%s\n",
+					name+defaultMark,
+					dbFile,
+					sys.CreatedAt.Format("2006-01-02"),
+				)
+			}
+
+			fmt.Println("\n* = default system")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Data directory for AgentOS")
 
 	return cmd
 }
@@ -564,15 +681,9 @@ func newLogsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Exibe os logs do sistema AgentOS",
-		Long:  `Exibe os logs de operacao e auditoria do sistema.`,
+		Long:  `Exibe os logs de operação e auditoria do sistema.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
-				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
-			}
+			dataDir = getDataDir(dataDir)
 
 			logPath := filepath.Join(dataDir, "logs", "picoclaw.log")
 
@@ -629,14 +740,14 @@ func newDiffCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "diff",
-		Short: "Compara dois manifestos e detecta mudancas",
-		Long:  `Analisa as diferencas entre duas versoes de manifesto.`,
+		Short: "Compara dois manifestos e detecta mudanças",
+		Long:  `Analisa as diferenças entre duas versões de manifesto.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if from == "" || to == "" {
 				return fmt.Errorf("both --from and --to flags are required")
 			}
 
-			fmt.Println("Detectando mudancas...")
+			fmt.Println("Detectando mudanças...")
 			fmt.Println("============================")
 
 			// Parse manifests
@@ -650,10 +761,10 @@ func newDiffCommand() *cobra.Command {
 				return fmt.Errorf("failed to parse to manifest: %w", err)
 			}
 
-			fmt.Printf("Versao: %s → %s\n\n", fromManifest.Metadata.Version, toManifest.Metadata.Version)
+			fmt.Printf("Versão: %s → %s\n\n", fromManifest.Metadata.Version, toManifest.Metadata.Version)
 
 			// Simple comparison
-			fmt.Println("Mudancas detectadas:")
+			fmt.Println("Mudanças detectadas:")
 
 			// Compare entities
 			fromEntities := make(map[string]bool)
@@ -672,7 +783,7 @@ func newDiffCommand() *cobra.Command {
 				fmt.Printf("  ✓ VERSION_CHANGE: %s → %s\n", fromManifest.Metadata.Version, toManifest.Metadata.Version)
 			}
 
-			fmt.Println("\nPara aplicar estas mudancas, execute:")
+			fmt.Println("\nPara aplicar estas mudanças, execute:")
 			fmt.Printf("  picoclaw agentos bootstrap --manifest %s\n", to)
 
 			return nil
@@ -685,36 +796,39 @@ func newDiffCommand() *cobra.Command {
 	return cmd
 }
 
-// newVersionsCommand cria o comando para listar versoes
+// newVersionsCommand cria o comando para listar versões
 func newVersionsCommand() *cobra.Command {
 	var dataDir string
 
 	cmd := &cobra.Command{
 		Use:   "versions",
-		Short: "Lista as versoes do manifesto",
-		Long:  `Exibe o historico de versoes do sistema.`,
+		Short: "Lista as versões do manifesto",
+		Long:  `Exibe o histórico de versões do sistema.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
-				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
+			dataDir = getDataDir(dataDir)
+
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
 			}
 
-			state, err := loadInstanceState(dataDir)
-			if err != nil {
-				fmt.Println("No versions found. Run 'picoclaw agentos bootstrap' first.")
+			if registry.GetSystemCount() == 0 {
+				fmt.Println("No systems found.")
 				return nil
 			}
 
-			fmt.Println("=== Versions ===")
-			if state.ManifestPath != "" {
-				m, _ := manifest.ParseFile(state.ManifestPath)
-				if m != nil {
-					fmt.Printf("Current: %s v%s\n", m.Metadata.Name, m.Metadata.Version)
-					fmt.Printf("Path: %s\n", state.ManifestPath)
+			fmt.Println("=== Registered Systems ===")
+			for name, sys := range registry.Systems {
+				m, err := manifest.ParseFile(sys.ManifestPath)
+				if err != nil {
+					fmt.Printf("  %s - error reading manifest: %v\n", name, err)
+					continue
 				}
+				defaultMark := ""
+				if name == registry.Default {
+					defaultMark = " (default)"
+				}
+				fmt.Printf("  %s%s: %s v%s\n", name, defaultMark, m.Metadata.Name, m.Metadata.Version)
 			}
 
 			return nil
@@ -726,30 +840,23 @@ func newVersionsCommand() *cobra.Command {
 	return cmd
 }
 
-// newConfigCommand cria o comando para gerenciar configuracao
+// newConfigCommand cria o comando para gerenciar configuração
 func newConfigCommand() *cobra.Command {
 	var dataDir string
 
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Gerencia a configuracao do AgentOS",
-		Long:  `Visualiza e modifica as configuracoes do AgentOS.`,
+		Short: "Gerencia a configuração do AgentOS",
+		Long:  `Visualiza e modifica as configurações do AgentOS.`,
 	}
 
 	getCmd := &cobra.Command{
 		Use:   "get [key]",
-		Short: "Obtem um valor de configuracao",
+		Short: "Obtém um valor de configuração",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key := args[0]
-
-			if dataDir == "" {
-				homeDir, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("failed to get home directory: %w", err)
-				}
-				dataDir = filepath.Join(homeDir, "picoclaw-data")
-			}
+			dataDir = getDataDir(dataDir)
 
 			configPath := filepath.Join(dataDir, "config.yaml")
 			if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -782,74 +889,4 @@ func newConfigCommand() *cobra.Command {
 	cmd.AddCommand(getCmd)
 
 	return cmd
-}
-
-// InstanceState represents the saved state of a bootstrapped instance
-type InstanceState struct {
-	ManifestPath string `json:"manifest_path"`
-	DBConnection string `json:"db_connection"`
-	ServerURL    string `json:"server_url"`
-}
-
-func saveInstanceState(dataDir, manifestPath, dbConnection string) error {
-	state := InstanceState{
-		ManifestPath: manifestPath,
-		DBConnection: dbConnection,
-		ServerURL:    "http://localhost:8080",
-	}
-
-	statePath := filepath.Join(dataDir, ".agentos_state.json")
-
-	// Simple JSON marshaling without importing encoding/json
-	content := fmt.Sprintf(`{
-  "manifest_path": %q,
-  "db_connection": %q,
-  "server_url": %q
-}`, state.ManifestPath, state.DBConnection, state.ServerURL)
-
-	return os.WriteFile(statePath, []byte(content), 0600)
-}
-
-func loadInstanceState(dataDir string) (InstanceState, error) {
-	var state InstanceState
-	statePath := filepath.Join(dataDir, ".agentos_state.json")
-
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return state, err
-	}
-
-	// Simple parsing - look for values in the JSON
-	content := string(data)
-	if start := strings.Index(content, `"manifest_path":`); start != -1 {
-		start += len(`"manifest_path":`)
-		if quote := strings.Index(content[start:], `"`); quote != -1 {
-			start += quote + 1
-			if end := strings.Index(content[start:], `"`); end != -1 {
-				state.ManifestPath = content[start : start+end]
-			}
-		}
-	}
-
-	if start := strings.Index(content, `"db_connection":`); start != -1 {
-		start += len(`"db_connection":`)
-		if quote := strings.Index(content[start:], `"`); quote != -1 {
-			start += quote + 1
-			if end := strings.Index(content[start:], `"`); end != -1 {
-				state.DBConnection = content[start : start+end]
-			}
-		}
-	}
-
-	if start := strings.Index(content, `"server_url":`); start != -1 {
-		start += len(`"server_url":`)
-		if quote := strings.Index(content[start:], `"`); quote != -1 {
-			start += quote + 1
-			if end := strings.Index(content[start:], `"`); end != -1 {
-				state.ServerURL = content[start : start+end]
-			}
-		}
-	}
-
-	return state, nil
 }

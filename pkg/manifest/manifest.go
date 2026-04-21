@@ -652,6 +652,38 @@ func (p *Parser) validateDataModel(dm *DataModel) {
 			}
 		}
 	}
+
+	// Validate all references point to existing entities
+	p.validateReferences(dm, seenEntities)
+}
+
+func (p *Parser) validateReferences(dm *DataModel, existingEntities map[string]bool) {
+	for _, entity := range dm.Entities {
+		for _, field := range entity.Fields {
+			if field.Reference != nil {
+				refEntity := field.Reference.Entity
+				if !existingEntities[refEntity] {
+					p.validationErrors = append(p.validationErrors, 
+						fmt.Errorf("field %s in entity %s references non-existent entity: %s", 
+							field.Name, entity.Name, refEntity))
+				}
+			}
+		}
+	}
+
+	// Validate relations reference existing entities
+	for _, relation := range dm.Relations {
+		if !existingEntities[relation.From] {
+			p.validationErrors = append(p.validationErrors, 
+				fmt.Errorf("relation %s references non-existent 'from' entity: %s", 
+					relation.Name, relation.From))
+		}
+		if !existingEntities[relation.To] {
+			p.validationErrors = append(p.validationErrors, 
+				fmt.Errorf("relation %s references non-existent 'to' entity: %s", 
+					relation.Name, relation.To))
+		}
+	}
 }
 
 func (p *Parser) validateBusinessRules(rules []BusinessRule) {

@@ -31,3 +31,5 @@ htmlcov/
 ```
 # Added by code-review-graph
 .code-review-graph/
+build/picoclaw-linux-amd64
+.gitignore
