@@ -184,6 +184,48 @@ data_model:
         - name: "idx_customer_license"
           fields: ["license_plate"]
 
+    - name: "Staff"
+      description: "Funcionário do estacionamento"
+      fields:
+        - name: "id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "name"
+          type: "string"
+          required: true
+          max_length: 100
+        - name: "email"
+          type: "string"
+          required: true
+          unique: true
+        - name: "employee_id"
+          type: "string"
+          required: true
+          unique: true
+        - name: "role"
+          type: "string"
+          required: true
+          description: "attendant, supervisor, manager, admin"
+        - name: "phone"
+          type: "string"
+          required: false
+        - name: "created_at"
+          type: "datetime"
+          required: true
+          default: "now()"
+        - name: "is_active"
+          type: "bool"
+          required: true
+          default: true
+      indexes:
+        - name: "idx_staff_email"
+          fields: ["email"]
+          unique: true
+        - name: "idx_staff_employee_id"
+          fields: ["employee_id"]
+          unique: true
+
     - name: "Vehicle"
       description: "Cadastro de veículo"
       fields:

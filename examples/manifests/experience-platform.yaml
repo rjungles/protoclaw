@@ -2,10 +2,12 @@
 # Este manifesto define atores, workflow, políticas e integrações para uma plataforma
 # onde autores submetem relatos brutos, editores os refinam e leitores consomem o conteúdo final.
 
-meta:
-  name: "Experience Platform"
+metadata:
+  name: "experience-platform"
   version: "1.0.0"
   description: "Sistema de descrição e publicação de experiências com workflow editorial"
+  author: "AgentOS Team"
+  created_at: "2025-01-15"
 
 actors:
   - id: "author"
