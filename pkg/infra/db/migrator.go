@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -191,9 +191,38 @@ func (m *Migrator) indexExists(name string) bool {
 	return err == nil && count > 0
 }
 
+// reservedKeywords contains SQL reserved keywords that need quoting
+var reservedKeywords = map[string]bool{
+	"transaction": true, "select": true, "insert": true, "update": true, "delete": true,
+	"create": true, "drop": true, "alter": true, "table": true, "index": true,
+	"view": true, "trigger": true, "pragma": true, "begin": true, "commit": true,
+	"rollback": true, "savepoint": true, "release": true, "where": true, "from": true,
+	"join": true, "inner": true, "outer": true, "left": true, "right": true,
+	"group": true, "order": true, "by": true, "having": true, "limit": true,
+	"offset": true, "union": true, "intersect": true, "except": true, "distinct": true,
+	"all": true, "values": true, "set": true, "into": true, "as": true, "on": true,
+	"and": true, "or": true, "not": true, "null": true, "is": true, "in": true,
+	"between": true, "like": true, "exists": true, "case": true, "when": true,
+	"then": true, "else": true, "end": true, "cast": true, "collate": true,
+}
+
+// isReservedKeyword checks if a word is a SQL reserved keyword
+func isReservedKeyword(word string) bool {
+	return reservedKeywords[strings.ToLower(word)]
+}
+
+// quoteIdentifier quotes an identifier if it's a reserved keyword
+func quoteIdentifier(name string) string {
+	if isReservedKeyword(name) {
+		return fmt.Sprintf(`"%s"`, name)
+	}
+	return name
+}
+
 // generateCreateTable gera SQL para criar uma tabela
 func (m *Migrator) generateCreateTable(entity manifest.Entity) (SchemaChange, error) {
 	tableName := m.formatTableName(entity.Name)
+	quotedTableName := quoteIdentifier(tableName)
 
 	var columns []string
 	var tableConstraints []string
@@ -221,7 +250,7 @@ func (m *Migrator) generateCreateTable(entity manifest.Entity) (SchemaChange, er
 	defs := make([]string, 0, len(columns)+len(tableConstraints))
 	defs = append(defs, columns...)
 	defs = append(defs, tableConstraints...)
-	sql := fmt.Sprintf("CREATE TABLE %s (%s)", tableName, strings.Join(defs, ", "))
+	sql := fmt.Sprintf("CREATE TABLE %s (%s)", quotedTableName, strings.Join(defs, ", "))
 
 	return SchemaChange{
 		Type:       "CREATE_TABLE",
@@ -261,8 +290,9 @@ func (m *Migrator) fieldToColumn(entity manifest.Entity, field manifest.Field, p
 
 	if field.Reference != nil {
 		refEntity := m.formatTableName(field.Reference.Entity)
+		quotedRefEntity := quoteIdentifier(refEntity)
 		refField := m.formatColumnName(field.Reference.Field)
-		constraints += fmt.Sprintf(" REFERENCES %s(%s)%s", refEntity, refField, onDeleteClause(field.Reference.OnDelete))
+		constraints += fmt.Sprintf(" REFERENCES %s(%s)%s", quotedRefEntity, refField, onDeleteClause(field.Reference.OnDelete))
 	}
 
 	return fmt.Sprintf("%s %s%s", colName, colType, constraints), nil
@@ -325,8 +355,9 @@ func (m *Migrator) generateAlterTable(entity manifest.Entity, tableName string) 
 				return nil, err
 			}
 
-			sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", tableName, colDef)
-			changes = append(changes, SchemaChange{
+		quotedTableName := quoteIdentifier(tableName)
+		sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quotedTableName, colDef)
+		changes = append(changes, SchemaChange{
 				Type:       "ADD_COLUMN",
 				Table:      tableName,
 				Column:     colName,
@@ -390,7 +421,8 @@ func (m *Migrator) generateIndexes(entity manifest.Entity, tableName string) []S
 		if idx.Unique {
 			create = "CREATE UNIQUE INDEX"
 		}
-		sql := fmt.Sprintf("%s IF NOT EXISTS %s ON %s (%s)", create, idxName, tableName, strings.Join(fields, ", "))
+		quotedTableName := quoteIdentifier(tableName)
+		sql := fmt.Sprintf("%s IF NOT EXISTS %s ON %s (%s)", create, idxName, quotedTableName, strings.Join(fields, ", "))
 		changes = append(changes, SchemaChange{
 			Type:       "CREATE_INDEX",
 			Table:      tableName,
@@ -553,12 +585,118 @@ func (m *Migrator) generateChangeDescription(change SchemaChange) string {
 
 // SortChanges ordena mudanças para execução correta
 func SortChanges(changes []SchemaChange) []SchemaChange {
-	// Ordenar: CREATE_TABLE primeiro, depois ADD_COLUMN, depois CREATE_INDEX
-	sort.Slice(changes, func(i, j int) bool {
-		order := map[string]int{"CREATE_TABLE": 1, "ADD_COLUMN": 2, "CREATE_INDEX": 3}
-		return order[changes[i].Type] < order[changes[j].Type]
-	})
-	return changes
+	// Separate CREATE_TABLE changes from others
+	var createTableChanges []SchemaChange
+	var otherChanges []SchemaChange
+
+	for _, change := range changes {
+		if change.Type == "CREATE_TABLE" {
+			createTableChanges = append(createTableChanges, change)
+		} else {
+			otherChanges = append(otherChanges, change)
+		}
+	}
+
+	// If no CREATE_TABLE changes, return original
+	if len(createTableChanges) == 0 {
+		return changes
+	}
+
+	// Build dependency graph using normalized (lowercase) table names
+	// Table -> list of tables it depends on (references)
+	dependsOn := make(map[string][]string)
+
+	// Compile regex for finding REFERENCES (case insensitive)
+	// Matches: REFERENCES table( or REFERENCES table ( or REFERENCES "table"(
+	refRegex := regexp.MustCompile(`(?i)REFERENCES\s+(?:"([^"]+)"|(\w+))\s*\(`)
+
+	for _, change := range createTableChanges {
+		tableNameLower := strings.ToLower(change.Table)
+		// Find all references in the SQL
+		matches := refRegex.FindAllStringSubmatch(change.SQL, -1)
+		for _, match := range matches {
+			if len(match) > 1 {
+				// Group 1 is quoted name, group 2 is unquoted name
+				var refTable string
+				if match[1] != "" {
+					refTable = strings.ToLower(match[1])
+				} else if len(match) > 2 && match[2] != "" {
+					refTable = strings.ToLower(match[2])
+				}
+				if refTable != "" && refTable != tableNameLower {
+					dependsOn[tableNameLower] = append(dependsOn[tableNameLower], refTable)
+				}
+			}
+		}
+	}
+
+	// Topological sort using Kahn's algorithm
+	// Calculate in-degree for each table using normalized names
+	inDegree := make(map[string]int)
+	tableMap := make(map[string]SchemaChange) // normalized name -> original change
+	for _, change := range createTableChanges {
+		nameLower := strings.ToLower(change.Table)
+		inDegree[nameLower] = 0
+		tableMap[nameLower] = change
+	}
+
+	// Calculate in-degrees (number of dependencies not yet resolved)
+	for table, deps := range dependsOn {
+		for _, dep := range deps {
+			// Only count if the dependency is also a table being created
+			if _, exists := tableMap[dep]; exists {
+				inDegree[table]++
+			}
+		}
+	}
+
+	// Find all tables with in-degree 0
+	var queue []string
+	for nameLower := range tableMap {
+		if inDegree[nameLower] == 0 {
+			queue = append(queue, nameLower)
+		}
+	}
+
+	// Process tables in topological order
+	var sortedTables []string
+	for len(queue) > 0 {
+		// Take first from queue
+		table := queue[0]
+		queue = queue[1:]
+		sortedTables = append(sortedTables, table)
+
+		// Reduce in-degree for tables that depend on this one
+		for otherTable, deps := range dependsOn {
+			for _, dep := range deps {
+				if dep == table {
+					inDegree[otherTable]--
+					if inDegree[otherTable] == 0 {
+						queue = append(queue, otherTable)
+					}
+				}
+			}
+		}
+	}
+
+	// Check for cycles
+	if len(sortedTables) != len(createTableChanges) {
+		// Cycle detected, return original order
+		return changes
+	}
+
+	// Build result in sorted order - tables with no dependencies come first
+	var result []SchemaChange
+	for _, tableNameLower := range sortedTables {
+		if change, exists := tableMap[tableNameLower]; exists {
+			result = append(result, change)
+		}
+	}
+
+	// Add other changes
+	result = append(result, otherChanges...)
+
+	return result
 }
 
 func (m *Migrator) detectPrimaryKeyColumn(entity manifest.Entity) string {
