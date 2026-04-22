@@ -373,7 +373,8 @@ func (m *Migrator) generateAlterTable(entity manifest.Entity, tableName string) 
 
 // getTableColumns retorna colunas existentes de uma tabela
 func (m *Migrator) getTableColumns(tableName string) ([]string, error) {
-	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
+	quotedTableName := quoteIdentifier(tableName)
+	query := fmt.Sprintf("PRAGMA table_info(%s)", quotedTableName)
 	rows, err := m.db.Query(query)
 	if err != nil {
 		return nil, err
