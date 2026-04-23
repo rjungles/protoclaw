@@ -3,6 +3,8 @@ package agentos
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/sipeed/picoclaw/pkg/agentos"
+	mcpserver "github.com/sipeed/picoclaw/pkg/mcp/server"
 	"github.com/sipeed/picoclaw/pkg/manifest"
 )
 
@@ -334,49 +337,73 @@ será criado automaticamente (baseado no nome do sistema no manifesto).`,
 // newServeCommand cria o comando para iniciar o servidor
 func newServeCommand() *cobra.Command {
 	var (
-		dataDir    string
-		port       int
-		host       string
+		dataDir string
+		port int
+		host string
 		systemName string
+		forceSingle bool // Force single system mode even with multiple systems
 	)
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Inicia o servidor HTTP do sistema AgentOS",
-		Long:  `Inicia o servidor HTTP com API REST e endpoints de sistema.
+		Long: `Inicia o servidor HTTP com API REST e endpoints de sistema.
 
-Se múltiplos sistemas existem no diretório de dados, use --system
-para selecionar qual sistema servir. Se não especificado, o sistema
-padrão será usado.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dataDir = getDataDir(dataDir)
+Se múltiplos sistemas existem no diretório de dados:
+- Por padrão, inicia o servidor multi-sistema (equivalente a 'multi-serve')
+- Use --system <name> para servir um sistema específico
+- Use --single para forçar o modo de sistema único
 
-			// Load registry
-			registry, err := LoadRegistry(dataDir)
-			if err != nil {
-				return fmt.Errorf("failed to load registry: %w", err)
-			}
+Exemplos:
+  # Inicia servidor com todos os sistemas (quando múltiplos existem)
+  picoclaw agentos serve
 
-			// Handle multiple systems
-			if registry.GetSystemCount() == 0 {
-				return fmt.Errorf("no systems found in %s\nRun 'picoclaw agentos bootstrap' first", dataDir)
-			}
+  # Serve um sistema específico
+  picoclaw agentos serve --system cafeteria
 
-			// Get target system
-			system, err := registry.GetSystem(systemName)
-			if err != nil {
-				// Show available systems
-				fmt.Println("Available systems:")
-				for name, info := range registry.Systems {
-					prefix := "  "
-					if name == registry.Default {
-						prefix = "* "
-					}
-					fmt.Printf("%s%s (manifest: %s)\n", prefix, name, info.ManifestPath)
+  # Força modo single mesmo com múltiplos sistemas
+  picoclaw agentos serve --single --system cafeteria`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dataDir = getDataDir(dataDir)
+
+		// Load registry
+		registry, err := LoadRegistry(dataDir)
+		if err != nil {
+			return fmt.Errorf("failed to load registry: %w", err)
+		}
+
+		// Handle multiple systems
+		if registry.GetSystemCount() == 0 {
+			return fmt.Errorf("no systems found in %s\nRun 'picoclaw agentos bootstrap' first", dataDir)
+		}
+
+		// Check if we should run in multi-system mode
+		// Multi-system mode is default when:
+		// 1. No specific system is requested AND multiple systems exist
+		// 2. User explicitly requested multi-serve mode
+		shouldRunMultiSystem := !forceSingle && (systemName == "" && registry.HasMultipleSystems())
+
+		if shouldRunMultiSystem {
+			fmt.Printf("Detectado %d sistemas. Iniciando em modo multi-sistema...\n\n", registry.GetSystemCount())
+			// Delegate to multi-serve implementation
+			return runMultiServe(dataDir, host, port, false, "")
+		}
+
+		// Get target system
+		system, err := registry.GetSystem(systemName)
+		if err != nil {
+			// Show available systems
+			fmt.Println("Available systems:")
+			for name, info := range registry.Systems {
+				prefix := " "
+				if name == registry.Default {
+					prefix = "* "
 				}
-				fmt.Println("\nUse --system <name> to select a system")
-				return err
+				fmt.Printf("%s%s (manifest: %s)\n", prefix, name, info.ManifestPath)
 			}
+			fmt.Println("\nUse --system <name> to select a system")
+			return err
+		}
 
 			// Verify manifest exists
 			if _, err := os.Stat(system.ManifestPath); os.IsNotExist(err) {
@@ -472,8 +499,181 @@ padrão será usado.`,
 	cmd.Flags().IntVar(&port, "port", 8080, "Port to listen on")
 	cmd.Flags().StringVar(&host, "host", "0.0.0.0", "Host to bind to")
 	cmd.Flags().StringVar(&systemName, "system", "", "System to serve (uses default if not set)")
+	cmd.Flags().BoolVar(&forceSingle, "single", false, "Force single system mode even with multiple systems")
 
 	return cmd
+}
+
+// runMultiServe executes the multi-serve functionality
+func runMultiServe(dataDir, host string, port int, requireAuth bool, adminKey string) error {
+	// Load registry
+	registry, err := LoadRegistry(dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to load registry: %w", err)
+	}
+
+	if registry.GetSystemCount() == 0 {
+		return fmt.Errorf("no systems found in %s\nRun 'picoclaw agentos bootstrap' first", dataDir)
+	}
+
+	// Generate admin key if not provided
+	if adminKey == "" && requireAuth {
+		adminKey = generateAPIKey()
+		fmt.Printf("Generated admin API key: %s\n", adminKey)
+	}
+
+	// Create multi-system server
+	server := &MultiSystemServer{
+		DataDir: dataDir,
+		Host:    host,
+		Port:    port,
+		Systems: make(map[string]*ManagedSystem),
+		mux:     http.NewServeMux(),
+		registry: registry,
+		globalAuth: GlobalAuthConfig{
+			Enabled:     requireAuth,
+			AdminKey:    adminKey,
+			RequireAuth: requireAuth,
+		},
+	}
+
+	// Bootstrap all systems
+	fmt.Println("=== Bootstrapping Systems ===")
+	for name, sysInfo := range registry.Systems {
+		fmt.Printf("Bootstrapping %s...\n", name)
+
+		if _, err := os.Stat(sysInfo.ManifestPath); os.IsNotExist(err) {
+			fmt.Printf(" Warning: Manifest not found for %s, skipping\n", name)
+			continue
+		}
+
+		cfg := agentos.BootstrapConfig{
+			ManifestPath: sysInfo.ManifestPath,
+			DBDriver:     "sqlite",
+			DBConnection: sysInfo.DBConnection,
+			DataDir:      dataDir,
+		}
+
+		bootstrapper := agentos.NewBootstrapper(cfg)
+		ctx := context.Background()
+		instance, err := bootstrapper.Bootstrap(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to bootstrap %s: %w", name, err)
+		}
+
+		// Create MCP server for this system
+		mcpCfg := mcpserver.ServerConfig{
+			Name:        instance.Manifest.Metadata.Name,
+			Version:     instance.Manifest.Metadata.Version,
+			Description: instance.Manifest.Metadata.Description,
+		}
+		mcpSvr := mcpserver.NewMCPServer(mcpCfg, instance)
+
+		// Generate API key for this system
+		systemAPIKey := generateAPIKey()
+
+		systemPrefix := "/" + name
+		server.Systems[name] = &ManagedSystem{
+			System:    sysInfo,
+			Instance:  instance,
+			Prefix:    systemPrefix,
+			MCPServer: mcpSvr,
+			apiKeys:   map[string]bool{systemAPIKey: true},
+		}
+		fmt.Printf(" %s bootstrapped (prefix: %s, api_key: %s)\n", name, systemPrefix, systemAPIKey[:8]+"...")
+	}
+
+	if len(server.Systems) == 0 {
+		return fmt.Errorf("no systems could be bootstrapped")
+	}
+
+	// Setup dashboard
+	server.dashboard = NewDashboardHandler(server)
+
+	// Setup routes
+	server.setupRoutes()
+
+	// Start HTTP server
+	addr := fmt.Sprintf("%s:%d", host, port)
+	httpServer := &http.Server{
+		Addr:         addr,
+		Handler:      server.mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	fmt.Printf("\n=== Multi-System Server Starting ===\n")
+	fmt.Printf("Address: http://%s\n", addr)
+	fmt.Printf("Systems: %d\n\n", len(server.Systems))
+
+	// Print system endpoints
+	fmt.Println("=== Available Systems ===")
+	for name, sys := range server.Systems {
+		fmt.Printf("\n%s (%s v%s)\n", name, sys.Instance.Manifest.Metadata.Name, sys.Instance.Manifest.Metadata.Version)
+		fmt.Printf(" API: http://%s%s/api/v1/...\n", addr, sys.Prefix)
+		fmt.Printf(" System: http://%s%s/_system/...\n", addr, sys.Prefix)
+		fmt.Printf(" Health: http://%s%s/_health\n", addr, sys.Prefix)
+		fmt.Printf(" MCP: http://%s%s/mcp\n", addr, sys.Prefix)
+	}
+
+	fmt.Println("\n=== Global Endpoints ===")
+	fmt.Printf(" Systems List: http://%s/_systems\n", addr)
+	fmt.Printf(" Health: http://%s/_health\n", addr)
+	fmt.Printf(" Admin: http://%s/admin\n", addr)
+
+	if server.globalAuth.Enabled {
+		fmt.Println("\n=== Authentication ===")
+		fmt.Printf(" Admin Key: %s\n", server.globalAuth.AdminKey)
+		fmt.Println(" Pass X-API-Key header for authentication")
+	}
+
+	fmt.Println("\nPress Ctrl+C to stop")
+
+	// Handle graceful shutdown
+	done := make(chan error, 1)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			done <- err
+		}
+		close(done)
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("server error: %w", err)
+		}
+	case sig := <-sigChan:
+		fmt.Printf("\nReceived signal %v, shutting down...\n", sig)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Shutdown all systems
+		for name, sys := range server.Systems {
+			fmt.Printf("Shutting down %s...\n", name)
+			if err := sys.Instance.Shutdown(shutdownCtx); err != nil {
+				fmt.Printf("Shutdown error for %s: %v\n", name, err)
+			}
+		}
+
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			fmt.Printf("Server shutdown error: %v\n", err)
+		}
+	}
+
+	fmt.Println("Server stopped gracefully")
+	return nil
+}
+
+// generateAPIKey generates a random API key
+func generateAPIKey() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // newValidateCommand cria o comando para validar manifestos
