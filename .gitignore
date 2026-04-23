@@ -33,3 +33,4 @@ htmlcov/
 .code-review-graph/
 build/picoclaw-linux-amd64
 .gitignore
+build/picoclaw
