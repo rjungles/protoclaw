@@ -669,13 +669,6 @@ func runMultiServe(dataDir, host string, port int, requireAuth bool, adminKey st
 	return nil
 }
 
-// generateAPIKey generates a random API key
-func generateAPIKey() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 // newValidateCommand cria o comando para validar manifestos
 func newValidateCommand() *cobra.Command {
 	var manifestPath string
