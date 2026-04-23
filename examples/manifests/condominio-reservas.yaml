@@ -1,0 +1,1363 @@
+# Manifesto do Sistema de Gerenciamento de Condomínio
+# Sistema para gerenciamento de recursos, reservas, serviços e caixa do condomínio
+
+metadata:
+  name: "condominio-reservas"
+  version: "1.0.0"
+  description: "Sistema de gerenciamento de recursos, reservas, serviços e caixa para condomínios"
+  author: "AgentOS Team"
+  created_at: "2025-01-15"
+  tags:
+    - condominio
+    - reservas
+    - gestao
+    - servicos
+    - caixa
+  labels:
+    industry: real-estate
+    type: condominium-management
+
+# Atores do sistema
+actors:
+  - id: admin_sistema
+    name: "Administrador do Sistema"
+    description: "Primeira pessoa que enviar mensagem no Telegram. Gerencia todos os perfis e aprovações de usuários."
+    roles:
+      - system_admin
+      - manager
+    permissions:
+      - resource: "*"
+        actions: ["*"]
+    attributes:
+      telegram_id: null  # Será preenchido automaticamente
+      is_first_contact: true
+      can_approve_users: true
+
+  - id: sindico
+    name: "Síndico"
+    description: "Responsável por contratos, recursos, multas e gestão do condomínio"
+    roles:
+      - manager
+      - financial_admin
+    permissions:
+      - resource: contracts
+        actions: ["create", "read", "update", "cancel"]
+      - resource: resources
+        actions: ["create", "read", "update", "delete"]
+      - resource: fines
+        actions: ["create", "read", "update"]
+      - resource: cash
+        actions: ["read", "manage"]
+      - resource: statements
+        actions: ["read", "generate"]
+      - resource: boletos
+        actions: ["read", "create", "update", "view_any"]
+    attributes:
+      can_manage_contracts: true
+      can_manage_resources: true
+      can_apply_fines: true
+      can_view_all_boletos: true
+      can_view_cash: true
+
+  - id: prestador_servico
+    name: "Prestador de Serviço"
+    description: "Profissional que oferece serviços no condomínio através de contrato firmado"
+    roles:
+      - service_provider
+    permissions:
+      - resource: my_services
+        actions: ["create", "read", "update", "delete"]
+      - resource: my_schedule
+        actions: ["read", "update"]
+      - resource: my_appointments
+        actions: ["read", "manage"]
+      - resource: my_contract
+        actions: ["read"]
+    attributes:
+      service_fee_rate: 0.10  # 10% para o condomínio
+      can_view_cash: false
+      requires_contract: true
+      contract_status: pending  # pending, active, cancelled
+
+  - id: morador
+    name: "Morador"
+    description: "Residente do condomínio com acesso a recursos e serviços"
+    roles:
+      - resident
+      - customer
+    permissions:
+      - resource: available_resources
+        actions: ["read", "reserve", "cancel", "update"]
+      - resource: my_reservations
+        actions: ["read", "create", "update", "cancel"]
+      - resource: available_services
+        actions: ["read", "schedule", "cancel", "update"]
+      - resource: my_appointments
+        actions: ["read", "create", "update", "cancel"]
+      - resource: cash
+        actions: ["read"]
+      - resource: statements
+        actions: ["read"]
+      - resource: boletos
+        actions: ["read", "view_own"]
+      - resource: service_complaints
+        actions: ["create", "read"]
+    attributes:
+      can_view_cash: true
+      can_view_statements: true
+      can_view_own_boletos: true
+
+# Modelo de dados
+data_model:
+  entities:
+    # Usuários e Perfis
+    - name: User
+      description: "Usuário do sistema com possibilidade de múltiplos perfis"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+          description: "ID único do usuário"
+        - name: telegram_id
+          type: string
+          required: true
+          unique: true
+          description: "ID do Telegram para notificações"
+        - name: name
+          type: string
+          required: true
+          max_length: 100
+          description: "Nome completo"
+        - name: email
+          type: string
+          required: false
+          unique: true
+          description: "E-mail para contato"
+        - name: phone
+          type: string
+          required: true
+          description: "Telefone/WhatsApp"
+        - name: unit
+          type: string
+          required: false
+          description: "Número da unidade (apartamento/casa)"
+        - name: profiles
+          type: json
+          required: true
+          description: "Lista de perfis atribuídos [morador, sindico, prestador]"
+        - name: registration_status
+          type: string
+          required: true
+          default: pending
+          description: "pending, approved, rejected"
+        - name: approved_by
+          type: string
+          required: false
+          reference:
+            entity: User
+            field: id
+            on_delete: set_null
+          description: "Administrador que aprovou o usuário"
+        - name: approved_at
+          type: datetime
+          required: false
+          description: "Data de aprovação"
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+        - name: is_active
+          type: bool
+          required: true
+          default: true
+      indexes:
+        - name: idx_user_telegram
+          fields: [telegram_id]
+          unique: true
+        - name: idx_user_status
+          fields: [registration_status]
+
+    # Recursos do Condomínio
+    - name: Resource
+      description: "Recursos disponíveis para reserva (salão de festas, churrasqueira, quadra, etc)"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: name
+          type: string
+          required: true
+          max_length: 100
+          description: "Nome do recurso"
+        - name: description
+          type: string
+          required: false
+          max_length: 500
+          description: "Descrição detalhada"
+        - name: resource_type
+          type: string
+          required: true
+          description: "Tipo: salao, churrasqueira, quadra, piscina, etc"
+        - name: capacity
+          type: int
+          required: false
+          description: "Capacidade máxima de pessoas"
+        - name: hourly_rate
+          type: float
+          required: true
+          default: 0.0
+          description: "Taxa de uso por hora"
+        - name: min_duration_hours
+          type: int
+          required: true
+          default: 1
+          description: "Duração mínima da reserva em horas"
+        - name: max_duration_hours
+          type: int
+          required: true
+          default: 8
+          description: "Duração máxima da reserva em horas"
+        - name: advance_booking_days
+          type: int
+          required: true
+          default: 30
+          description: "Dias máximos para reserva antecipada"
+        - name: available_days
+          type: json
+          required: true
+          default: "[0,1,2,3,4,5,6]"
+          description: "Dias disponíveis da semana [0-6]"
+        - name: available_hours_start
+          type: int
+          required: true
+          default: 8
+          description: "Horário inicial de disponibilidade"
+        - name: available_hours_end
+          type: int
+          required: true
+          default: 22
+          description: "Horário final de disponibilidade"
+        - name: requires_deposit
+          type: bool
+          required: true
+          default: false
+          description: "Requer caução/dança?"
+        - name: deposit_amount
+          type: float
+          required: false
+          default: 0.0
+          description: "Valor da caução"
+        - name: is_active
+          type: bool
+          required: true
+          default: true
+        - name: status
+          type: string
+          required: true
+          default: available
+          description: "available, maintenance, damaged, unavailable"
+        - name: damaged_by
+          type: string
+          required: false
+          reference:
+            entity: User
+            field: id
+            on_delete: set_null
+          description: "Usuário que causou dano ao recurso"
+        - name: damage_date
+          type: datetime
+          required: false
+          description: "Data do dano"
+        - name: damage_description
+          type: string
+          required: false
+          max_length: 1000
+          description: "Descrição do dano"
+        - name: created_by
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+        - name: updated_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_resource_type
+          fields: [resource_type]
+        - name: idx_resource_status
+          fields: [status]
+
+    # Reservas de Recursos
+    - name: ResourceReservation
+      description: "Reserva de recursos por moradores"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: resource_id
+          type: string
+          required: true
+          reference:
+            entity: Resource
+            field: id
+            on_delete: restrict
+        - name: user_id
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+            on_delete: restrict
+          description: "Morador que fez a reserva"
+        - name: start_datetime
+          type: datetime
+          required: true
+          description: "Início da reserva"
+        - name: end_datetime
+          type: datetime
+          required: true
+          description: "Fim da reserva"
+        - name: total_hours
+          type: float
+          required: true
+          description: "Total de horas reservadas"
+        - name: usage_fee
+          type: float
+          required: true
+          description: "Taxa de uso calculada"
+        - name: deposit_amount
+          type: float
+          required: false
+          default: 0.0
+          description: "Valor da caução"
+        - name: status
+          type: string
+          required: true
+          default: pending
+          description: "pending, confirmed, cancelled, completed, no_show"
+        - name: cancellation_date
+          type: datetime
+          required: false
+          description: "Data de cancelamento"
+        - name: cancellation_reason
+          type: string
+          required: false
+          max_length: 500
+        - name: charge_applied
+          type: bool
+          required: true
+          default: false
+          description: "Taxa foi cobrada?"
+        - name: notes
+          type: string
+          required: false
+          max_length: 1000
+          description: "Observações"
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+        - name: updated_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_reservation_resource
+          fields: [resource_id]
+        - name: idx_reservation_user
+          fields: [user_id]
+        - name: idx_reservation_dates
+          fields: [start_datetime, end_datetime]
+        - name: idx_reservation_status
+          fields: [status]
+
+    # Prestadores de Serviço
+    - name: ServiceProvider
+      description: "Prestadores de serviço contratados pelo condomínio"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: user_id
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+            on_delete: cascade
+        - name: company_name
+          type: string
+          required: false
+          max_length: 200
+        - name: document_number
+          type: string
+          required: true
+          unique: true
+          description: "CNPJ ou CPF"
+        - name: service_categories
+          type: json
+          required: true
+          description: "Categorias de serviço"
+        - name: bio
+          type: string
+          required: false
+          max_length: 2000
+          description: "Breve descrição do prestador"
+        - name: contract_status
+          type: string
+          required: true
+          default: pending
+          description: "pending, active, suspended, cancelled"
+        - name: contract_start_date
+          type: datetime
+          required: false
+        - name: contract_end_date
+          type: datetime
+          required: false
+        - name: service_fee_rate
+          type: float
+          required: true
+          default: 0.10
+          description: "Percentual (10% padrão)"
+        - name: approved_by
+          type: string
+          required: false
+          reference:
+            entity: User
+            field: id
+            on_delete: set_null
+        - name: approved_at
+          type: datetime
+          required: false
+        - name: total_services_completed
+          type: int
+          required: true
+          default: 0
+        - name: rating
+          type: float
+          required: false
+          description: "Avaliação média (1-5)"
+        - name: is_active
+          type: bool
+          required: true
+          default: true
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_provider_user
+          fields: [user_id]
+          unique: true
+        - name: idx_provider_status
+          fields: [contract_status]
+        - name: idx_provider_document
+          fields: [document_number]
+          unique: true
+
+    # Serviços Oferecidos
+    - name: Service
+      description: "Serviços oferecidos pelos prestadores"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: provider_id
+          type: string
+          required: true
+          reference:
+            entity: ServiceProvider
+            field: id
+            on_delete: cascade
+        - name: name
+          type: string
+          required: true
+          max_length: 100
+          description: "Nome do serviço"
+        - name: description
+          type: string
+          required: false
+          max_length: 1000
+        - name: category
+          type: string
+          required: true
+          description: "Categoria: limpeza, manutencao, beleza, saude, etc"
+        - name: duration_minutes
+          type: int
+          required: true
+          description: "Duração estimada em minutos"
+        - name: base_price
+          type: float
+          required: true
+          description: "Preço base"
+        - name: max_clients_per_slot
+          type: int
+          required: true
+          default: 1
+          description: "Quantidade máxima de atendimentos simultâneos"
+        - name: available_days
+          type: json
+          required: true
+          default: "[1,2,3,4,5]"
+        - name: available_hours_start
+          type: int
+          required: true
+          default: 9
+        - name: available_hours_end
+          type: int
+          required: true
+          default: 18
+        - name: requires_materials
+          type: bool
+          required: true
+          default: false
+        - name: materials_included
+          type: bool
+          required: false
+          default: false
+        - name: is_active
+          type: bool
+          required: true
+          default: true
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_service_provider
+          fields: [provider_id]
+        - name: idx_service_category
+          fields: [category]
+
+    # Agendamentos de Serviço
+    - name: ServiceAppointment
+      description: "Agendamentos de serviços por moradores"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: service_id
+          type: string
+          required: true
+          reference:
+            entity: Service
+            field: id
+            on_delete: restrict
+        - name: provider_id
+          type: string
+          required: true
+          reference:
+            entity: ServiceProvider
+            field: id
+        - name: customer_id
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+        - name: scheduled_datetime
+          type: datetime
+          required: true
+        - name: duration_minutes
+          type: int
+          required: true
+        - name: price
+          type: float
+          required: true
+        - name: condo_fee
+          type: float
+          required: true
+          description: "Taxa do condomínio (10%)"
+        - name: provider_amount
+          type: float
+          required: true
+          description: "Valor para o prestador (90%)"
+        - name: status
+          type: string
+          required: true
+          default: scheduled
+          description: "scheduled, confirmed, cancelled, completed, no_show, complaint"
+        - name: cancellation_date
+          type: datetime
+          required: false
+        - name: cancellation_reason
+          type: string
+          required: false
+          max_length: 500
+        - name: charge_applied
+          type: bool
+          required: true
+          default: false
+          description: "Taxa foi cobrada?"
+        - name: notes
+          type: string
+          required: false
+          max_length: 1000
+        - name: complaint_filed
+          type: bool
+          required: true
+          default: false
+          description: "Houve denúncia?"
+        - name: complaint_description
+          type: string
+          required: false
+          max_length: 2000
+        - name: complaint_date
+          type: datetime
+          required: false
+        - name: fine_applied
+          type: float
+          required: false
+          default: 0.0
+          description: "Multa aplicada ao prestador"
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+        - name: updated_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_appointment_service
+          fields: [service_id]
+        - name: idx_appointment_customer
+          fields: [customer_id]
+        - name: idx_appointment_provider
+          fields: [provider_id]
+        - name: idx_appointment_date
+          fields: [scheduled_datetime]
+        - name: idx_appointment_status
+          fields: [status]
+
+    # Contratos
+    - name: Contract
+      description: "Contratos entre síndico e prestadores de serviço"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: provider_id
+          type: string
+          required: true
+          reference:
+            entity: ServiceProvider
+            field: id
+            on_delete: restrict
+        - name: title
+          type: string
+          required: true
+          max_length: 200
+        - name: description
+          type: string
+          required: false
+          max_length: 5000
+        - name: start_date
+          type: datetime
+          required: true
+        - name: end_date
+          type: datetime
+          required: false
+        - name: service_fee_rate
+          type: float
+          required: true
+          default: 0.10
+        - name: exclusivity
+          type: bool
+          required: true
+          default: false
+          description: "Exclusividade no condomínio?"
+        - name: status
+          type: string
+          required: true
+          default: draft
+          description: "draft, active, suspended, terminated"
+        - name: termination_reason
+          type: string
+          required: false
+          max_length: 2000
+        - name: terminated_by
+          type: string
+          required: false
+          reference:
+            entity: User
+            field: id
+            on_delete: set_null
+        - name: terminated_at
+          type: datetime
+          required: false
+        - name: created_by
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+        - name: updated_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_contract_provider
+          fields: [provider_id]
+          unique: true
+        - name: idx_contract_status
+          fields: [status]
+
+    # Multas
+    - name: Fine
+      description: "Multas aplicadas por danos ou infrações"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: user_id
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+            on_delete: restrict
+          description: "Morador ou prestador multado"
+        - name: resource_id
+          type: string
+          required: false
+          reference:
+            entity: Resource
+            field: id
+            on_delete: set_null
+          description: "Recurso danificado (se aplicável)"
+        - name: reservation_id
+          type: string
+          required: false
+          reference:
+            entity: ResourceReservation
+            field: id
+            on_delete: set_null
+        - name: appointment_id
+          type: string
+          required: false
+          reference:
+            entity: ServiceAppointment
+            field: id
+            on_delete: set_null
+        - name: fine_type
+          type: string
+          required: true
+          description: "resource_damage, service_complaint, other"
+        - name: amount
+          type: float
+          required: true
+        - name: description
+          type: string
+          required: true
+          max_length: 2000
+        - name: applied_by
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+        - name: applied_at
+          type: datetime
+          required: true
+          default: now()
+        - name: paid
+          type: bool
+          required: true
+          default: false
+        - name: paid_at
+          type: datetime
+          required: false
+        - name: notified_all_residents
+          type: bool
+          required: true
+          default: false
+          description: "Todos os moradores foram notificados?"
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_fine_user
+          fields: [user_id]
+        - name: idx_fine_type
+          fields: [fine_type]
+        - name: idx_fine_paid
+          fields: [paid]
+
+    # Caixa do Condomínio
+    - name: Cash
+      description: "Registros de caixa e extratos"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: transaction_type
+          type: string
+          required: true
+          description: "income, expense, transfer"
+        - name: category
+          type: string
+          required: true
+          description: "reservation, service_fee, fine, maintenance, other"
+        - name: amount
+          type: float
+          required: true
+        - name: description
+          type: string
+          required: true
+          max_length: 1000
+        - name: reference_id
+          type: string
+          required: false
+          description: "ID da reserva, agendamento, multa, etc"
+        - name: reference_type
+          type: string
+          required: false
+          description: "reservation, appointment, fine, etc"
+        - name: transaction_date
+          type: datetime
+          required: true
+          default: now()
+        - name: recorded_by
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+        - name: balance_after
+          type: float
+          required: true
+          description: "Saldo após a transação"
+        - name: notes
+          type: string
+          required: false
+          max_length: 1000
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_cash_type
+          fields: [transaction_type]
+        - name: idx_cash_category
+          fields: [category]
+        - name: idx_cash_date
+          fields: [transaction_date]
+
+    # Boletos
+    - name: Boleto
+      description: "Boletos de condomínio mensais"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: user_id
+          type: string
+          required: true
+          reference:
+            entity: User
+            field: id
+        - name: reference_month
+          type: string
+          required: true
+          description: "YYYY-MM"
+        - name: due_date
+          type: datetime
+          required: true
+        - name: amount
+          type: float
+          required: true
+          description: "Valor base do condomínio"
+        - name: additional_charges
+          type: float
+          required: true
+          default: 0.0
+          description: "Multas, taxas de reserva, etc"
+        - name: total_amount
+          type: float
+          required: true
+        - name: status
+          type: string
+          required: true
+          default: pending
+          description: "pending, paid, overdue, cancelled"
+        - name: paid_at
+          type: datetime
+          required: false
+        - name: paid_amount
+          type: float
+          required: false
+        - name: barcode
+          type: string
+          required: true
+          unique: true
+        - name: notes
+          type: string
+          required: false
+          max_length: 1000
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_boleto_user
+          fields: [user_id]
+        - name: idx_boleto_month
+          fields: [reference_month]
+        - name: idx_boleto_status
+          fields: [status]
+        - name: idx_boleto_barcode
+          fields: [barcode]
+          unique: true
+
+    # Notificações
+    - name: Notification
+      description: "Registro de notificações enviadas"
+      fields:
+        - name: id
+          type: string
+          required: true
+          unique: true
+        - name: user_id
+          type: string
+          required: false
+          reference:
+            entity: User
+            field: id
+            on_delete: set_null
+          description: "Destinatário (null para broadcast)"
+        - name: notification_type
+          type: string
+          required: true
+          description: "user_approval, contract_change, fine_notice, reservation_reminder, etc"
+        - name: title
+          type: string
+          required: true
+          max_length: 200
+        - name: message
+          type: string
+          required: true
+          max_length: 5000
+        - name: channel
+          type: string
+          required: true
+          default: telegram
+          description: "telegram, email, sms"
+        - name: sent
+          type: bool
+          required: true
+          default: false
+        - name: sent_at
+          type: datetime
+          required: false
+        - name: read
+          type: bool
+          required: true
+          default: false
+        - name: read_at
+          type: datetime
+          required: false
+        - name: reference_id
+          type: string
+          required: false
+          description: "ID da entidade relacionada"
+        - name: reference_type
+          type: string
+          required: false
+          description: "Tipo da entidade relacionada"
+        - name: created_at
+          type: datetime
+          required: true
+          default: now()
+      indexes:
+        - name: idx_notification_user
+          fields: [user_id]
+        - name: idx_notification_type
+          fields: [notification_type]
+        - name: idx_notification_sent
+          fields: [sent]
+
+# Regras de negócio
+business_rules:
+  - id: rule_calculate_reservation_fee
+    name: "Calcular taxa de reserva"
+    description: "Calcula a taxa de uso baseada nas horas reservadas"
+    trigger:
+      event: create
+      entities: [ResourceReservation]
+    actions:
+      - type: calculate
+        target: usage_fee
+        formula: total_hours * resource.hourly_rate
+
+  - id: rule_calculate_service_condo_fee
+    name: "Calcular taxa do condomínio sobre serviço"
+    description: "Calcula 10% do valor para o condomínio"
+    trigger:
+      event: create
+      entities: [ServiceAppointment]
+    actions:
+      - type: calculate
+        target: condo_fee
+        formula: price * 0.10
+      - type: calculate
+        target: provider_amount
+        formula: price * 0.90
+
+  - id: rule_notify_admin_new_user
+    name: "Notificar admin sobre novo usuário"
+    description: "Envia mensagem para admin aprovar novo usuário"
+    trigger:
+      event: create
+      entities: [User]
+    condition: user.registration_status == 'pending'
+    actions:
+      - type: notify
+        target: admin_sistema
+        message: "Novo usuário aguardando aprovação: {{user.name}}"
+
+  - id: rule_notify_user_approved
+    name: "Notificar usuário aprovado"
+    description: "Notifica usuário quando perfis são atribuídos"
+    trigger:
+      event: update
+      entities: [User]
+    condition: user.registration_status == 'approved'
+    actions:
+      - type: notify
+        target: user
+        message: "Seu cadastro foi aprovado! Perfis: {{user.profiles}}"
+
+  - id: rule_broadcast_fine
+    name: "Notificar moradores sobre multa"
+    description: "Envia mensagem a todos os moradores quando há multa por dano"
+    trigger:
+      event: create
+      entities: [Fine]
+    condition: fine.fine_type == 'resource_damage'
+    actions:
+      - type: broadcast
+        target: all_residents
+        message: "Atenção: Dano ao recurso {{resource.name}}. Multa aplicada. Cuidado com o patrimônio!"
+
+  - id: rule_notify_contract_change
+    name: "Notificar mudança de contrato"
+    description: "Notifica todos os moradores sobre criação/alteração/cancelamento de contrato"
+    trigger:
+      event: create
+      entities: [Contract]
+    actions:
+      - type: broadcast
+        target: all_residents
+        message: "Novo contrato firmado com {{provider.company_name}}"
+
+  - id: rule_charge_if_not_cancelled
+    name: "Cobrar taxa se não cancelado"
+    description: "Aplica cobrança se não houver cancelamento até a data"
+    trigger:
+      event: update
+      entities: [ResourceReservation, ServiceAppointment]
+    condition: "entity.status != 'cancelled' AND entity.charge_applied == false"
+    actions:
+      - type: create
+        target: Cash
+        parameters:
+          transaction_type: income
+          category: reservation|service_fee
+
+# Workflows
+workflows:
+  - id: user_approval_flow
+    name: "Fluxo de Aprovação de Usuário"
+    description: "Gerencia o processo de aprovação de novos usuários"
+    entity: User
+    initial_state: PENDING
+    states:
+      - id: PENDING
+        description: "Aguardando aprovação do administrador"
+        transitions:
+          - to: APPROVED
+            action: approve
+            allowed_roles: [system_admin]
+          - to: REJECTED
+            action: reject
+            allowed_roles: [system_admin]
+      - id: APPROVED
+        description: "Usuário aprovado com perfis atribuídos"
+        transitions: []
+      - id: REJECTED
+        description: "Cadastro rejeitado"
+        transitions:
+          - to: PENDING
+            action: reapply
+            allowed_roles: [system_admin]
+
+  - id: resource_reservation_flow
+    name: "Fluxo de Reserva de Recurso"
+    description: "Gerencia reservas de recursos"
+    entity: ResourceReservation
+    initial_state: PENDING
+    states:
+      - id: PENDING
+        description: "Aguardando confirmação"
+        transitions:
+          - to: CONFIRMED
+            action: confirm
+            allowed_roles: [resident, manager]
+          - to: CANCELLED
+            action: cancel
+            allowed_roles: [resident, manager]
+      - id: CONFIRMED
+        description: "Reserva confirmada"
+        transitions:
+          - to: COMPLETED
+            action: complete
+            allowed_roles: [manager]
+          - to: CANCELLED
+            action: cancel
+            allowed_roles: [resident, manager]
+      - id: CANCELLED
+        description: "Reserva cancelada"
+        transitions: []
+      - id: COMPLETED
+        description: "Reserva concluída"
+        transitions: []
+
+  - id: fine_application_flow
+    name: "Fluxo de Aplicação de Multa"
+    description: "Gerencia aplicação de multas e notificações"
+    entity: Fine
+    initial_state: APPLIED
+    states:
+      - id: APPLIED
+        description: "Multa aplicada"
+        transitions:
+          - to: PAID
+            action: pay
+            allowed_roles: [resident, service_provider]
+          - to: CANCELLED
+            action: cancel
+            allowed_roles: [manager]
+      - id: PAID
+        description: "Multa paga"
+        transitions: []
+      - id: CANCELLED
+        description: "Multa cancelada"
+        transitions: []
+
+  - id: service_complaint_flow
+    name: "Fluxo de Denúncia de Serviço"
+    description: "Gerencia denúncias de moradores sobre prestadores"
+    entity: ServiceAppointment
+    initial_state: SCHEDULED
+    states:
+      - id: SCHEDULED
+        description: "Agendamento confirmado"
+        transitions:
+          - to: COMPLAINT_FILED
+            action: file_complaint
+            allowed_roles: [resident]
+          - to: COMPLETED
+            action: complete
+            allowed_roles: [service_provider]
+          - to: CANCELLED
+            action: cancel
+            allowed_roles: [resident, service_provider]
+      - id: COMPLAINT_FILED
+        description: "Denúncia registrada"
+        transitions:
+          - to: FINE_APPLIED
+            action: apply_fine
+            allowed_roles: [manager]
+          - to: CONTRACT_CANCELLED
+            action: cancel_contract
+            allowed_roles: [manager]
+          - to: DISMISSED
+            action: dismiss
+            allowed_roles: [manager]
+      - id: FINE_APPLIED
+        description: "Multa aplicada ao prestador"
+        transitions: []
+      - id: CONTRACT_CANCELLED
+        description: "Contrato cancelado"
+        transitions: []
+      - id: DISMISSED
+        description: "Denúncia rejeitada"
+        transitions: []
+      - id: COMPLETED
+        description: "Serviço concluído"
+        transitions: []
+      - id: CANCELLED
+        description: "Agendamento cancelado"
+        transitions: []
+
+# Integrações
+integrations:
+  telegram:
+    enabled: true
+    description: "Bot do Telegram para notificações e interações"
+    webhook: "/webhooks/telegram"
+    commands:
+      - command: start
+        description: "Iniciar atendimento e verificar primeiro contato"
+        action: check_first_contact
+      - command: minhas_reservas
+        description: "Listar minhas reservas de recursos"
+        action: list_my_reservations
+      - command: meus_agendamentos
+        description: "Listar meus agendamentos de serviço"
+        action: list_my_appointments
+      - command: recursos
+        description: "Listar recursos disponíveis"
+        action: list_available_resources
+      - command: servicos
+        description: "Listar serviços disponíveis"
+        action: list_available_services
+      - command: caixa
+        description: "Ver saldo do caixa (exclui prestadores)"
+        action: view_cash
+        condition: user.profile != 'prestador'
+      - command: meu_boleto
+        description: "Ver meu boleto do mês"
+        action: view_my_boleto
+      - command: aprovar_usuario
+        description: "[Admin] Aprovar/rejeitar usuário"
+        action: approve_user
+        condition: user.profile == 'admin_sistema'
+      - command: aplicar_multa
+        description: "[Síndico] Aplicar multa"
+        action: apply_fine
+        condition: user.profile == 'sindico'
+      - command: contratos
+        description: "[Síndico] Gerenciar contratos"
+        action: manage_contracts
+        condition: user.profile == 'sindico'
+
+  webhook:
+    enabled: true
+    endpoints:
+      - path: "/webhooks/telegram"
+        description: "Webhook para mensagens do Telegram"
+        method: POST
+        event: telegram_message
+
+# Políticas de segurança
+policies:
+  - name: "condominio.access"
+    rego: |
+      package condominio.access
+
+      default allow = false
+
+      # Admin pode tudo
+      allow {
+        input.user.roles[_] == "system_admin"
+      }
+
+      # Síndico pode gerenciar contratos, recursos, multas e ver tudo
+      allow {
+        input.user.roles[_] == "manager"
+        input.resource.type == "contracts"
+        input.action == "create"
+      }
+
+      allow {
+        input.user.roles[_] == "manager"
+        input.resource.type == "resources"
+        input.action == "create"
+      }
+
+      allow {
+        input.user.roles[_] == "manager"
+        input.resource.type == "fines"
+        input.action == "create"
+      }
+
+      allow {
+        input.user.roles[_] == "manager"
+        input.resource.type == "boletos"
+        input.action == "view_any"
+      }
+
+      # Morador pode ver recursos e fazer reservas
+      allow {
+        input.user.roles[_] == "resident"
+        input.resource.type == "available_resources"
+        input.action == "reserve"
+      }
+
+      # Morador pode agendar serviços
+      allow {
+        input.user.roles[_] == "resident"
+        input.resource.type == "available_services"
+        input.action == "schedule"
+      }
+
+      # Morador pode ver caixa e extratos
+      allow {
+        input.user.roles[_] == "resident"
+        input.resource.type == "cash"
+        input.action == "read"
+      }
+
+      # Morador só pode ver seus próprios boletos
+      allow {
+        input.user.roles[_] == "resident"
+        input.resource.type == "boletos"
+        input.resource.owner_id == input.user.id
+      }
+
+      # Prestador pode gerenciar seus serviços
+      allow {
+        input.user.roles[_] == "service_provider"
+        input.resource.type == "my_services"
+        input.action == "create"
+      }
+
+      # Prestador NÃO pode ver caixa
+      deny {
+        input.user.roles[_] == "service_provider"
+        input.resource.type == "cash"
+      }
+
+# Configurações adicionais
+settings:
+  reservation:
+    cancellation_hours_before: 24
+    charge_after_no_show: true
+    deposit_refund_days: 7
+
+  service:
+    condo_fee_percentage: 10
+    cancellation_hours_before: 24
+    charge_after_no_show: true
+
+  notifications:
+    reminder_hours_before: 24
+    broadcast_fine_to_all: true
+    notify_contract_changes: true
+
+  fines:
+    auto_notify_all_residents: true
+    min_amount: 50.00
