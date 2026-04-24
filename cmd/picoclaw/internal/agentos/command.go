@@ -3,8 +3,6 @@ package agentos
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
