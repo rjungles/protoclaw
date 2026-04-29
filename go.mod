@@ -30,6 +30,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/mymmrac/telego v1.8.0
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
+	github.com/open-policy-agent/opa v1.15.2
 	github.com/openai/openai-go/v3 v3.22.0
 	github.com/pion/rtp v1.10.1
 	github.com/pion/webrtc/v3 v3.3.6
@@ -46,6 +47,7 @@ require (
 	golang.org/x/term v0.41.0
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/fsnotify.v1 v1.4.7
 	gopkg.in/yaml.v3 v3.0.1
 	maunium.net/go/mautrix v0.26.4
 	modernc.org/sqlite v1.48.2
@@ -102,7 +104,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mattn/go-sqlite3 v1.14.42 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/open-policy-agent/opa v1.15.2 // indirect
 	github.com/petermattis/goid v0.0.0-20260226131333-17d1149c6ac6 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
@@ -162,7 +163,6 @@ require (
 	golang.org/x/net v0.52.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.43.0
-	gopkg.in/square/go-jose.v2 v2.6.0
 )
 
 replace github.com/bwmarrin/discordgo => github.com/yeongaori/discordgo-fork v0.0.0-20260319072544-e8e546f5d532

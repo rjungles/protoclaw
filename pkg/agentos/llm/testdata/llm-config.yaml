@@ -1,0 +1,116 @@
+version: "1.0"
+generated_at: "2024-01-15T10:00:00Z"
+system: "test-system"
+
+settings:
+  hot_reload: true
+  reload_interval: 5
+  provider_chain:
+    timeout: 30
+    max_retries: 2
+    fallback: true
+  default_routing:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    timeout: 30
+    max_tokens: 4096
+    temperature: 0.7
+
+providers:
+  - name: "openai"
+    type: "openai"
+    enabled: true
+    priority: 1
+    models:
+      - id: "gpt-4o"
+        name: "GPT-4o"
+        max_tokens: 128000
+      - id: "gpt-4o-mini"
+        name: "GPT-4o Mini"
+        max_tokens: 128000
+    config:
+      base_url: "https://api.openai.com/v1"
+    costs:
+      input_per_1k: 0.005
+      output_per_1k: 0.015
+
+  - name: "anthropic"
+    type: "anthropic"
+    enabled: true
+    priority: 2
+    models:
+      - id: "claude-3-opus-20240229"
+        name: "Claude 3 Opus"
+        max_tokens: 200000
+      - id: "claude-3-sonnet-20240229"
+        name: "Claude 3 Sonnet"
+        max_tokens: 200000
+    config:
+      base_url: "https://api.anthropic.com/v1"
+    costs:
+      input_per_1k: 0.015
+      output_per_1k: 0.075
+
+  - name: "groq"
+    type: "compatible"
+    enabled: true
+    priority: 3
+    models:
+      - id: "mixtral-8x7b-32768"
+        name: "Mixtral 8x7B"
+        max_tokens: 32768
+    config:
+      base_url: "https://api.groq.com/openai/v1"
+    costs:
+      input_per_1k: 0.00027
+      output_per_1k: 0.00027
+
+agents:
+  chat-agent:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    temperature: 0.7
+    max_tokens: 2000
+    system_prompt: "You are a helpful assistant."
+    capabilities:
+      - text_generation
+      - code
+
+routing:
+  functions:
+    code-review:
+      provider: "anthropic"
+      model: "claude-3-sonnet-20240229"
+      temperature: 0.3
+    summarize:
+      provider: "groq"
+      model: "mixtral-8x7b-32768"
+  intents:
+    coding:
+      provider: "openai"
+      model: "gpt-4o"
+      temperature: 0.2
+  cost_based:
+    enabled: true
+    strategy: "cheapest"
+  ab_testing:
+    enabled: false
+    current_variant: "a"
+    variant_a:
+      provider: "openai"
+      model: "gpt-4o-mini"
+    variant_b:
+      provider: "anthropic"
+      model: "claude-3-sonnet-20240229"
+
+defaults:
+  temperature: 0.7
+  max_tokens: 2000
+  timeout: 30s
+  retry:
+    max_attempts: 3
+    backoff: exponential
+    initial_delay: 1s
+    max_delay: 60s
+
+env_file: ".env"

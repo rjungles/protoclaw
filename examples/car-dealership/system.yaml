@@ -1,0 +1,394 @@
+apiVersion: v1
+kind: System
+metadata:
+  name: AutoPrime Concessionária
+  description: Sistema de gestão e atendimento para concessionária de veículos
+  version: 1.0.0
+  author: AutoPrime
+
+defaults:
+  timezone: America/Sao_Paulo
+  currency: BRL
+  language: pt-BR
+
+entities:
+  # Clientes
+  Customer:
+    description: Clientes da concessionária
+    attributes:
+      - name: fullName
+        type: string
+        required: true
+      - name: email
+        type: string
+        required: true
+        validations:
+          - email: true
+      - name: phone
+        type: string
+        required: true
+      - name: document
+        type: string
+        description: CPF/CNPJ
+        required: true
+      - name: address
+        type: json
+      - name: preferredContact
+        type: enum
+        values: [email, phone, whatsapp]
+      - name: budget
+        type: decimal
+        description: Orçamento estimado
+      - name: status
+        type: enum
+        values: [active, inactive, vip]
+        default: active
+    relationships:
+      - entity: VehicleInterest
+        type: has_many
+        field: customer
+      - entity: Appointment
+        type: has_many
+        field: customer
+      - entity: Sale
+        type: has_many
+        field: customer
+
+  # Veículos em estoque
+  Vehicle:
+    description: Veículos disponíveis
+    attributes:
+      - name: brand
+        type: string
+        required: true
+      - name: model
+        type: string
+        required: true
+      - name: year
+        type: integer
+        required: true
+      - name: plate
+        type: string
+      - name: vin
+        type: string
+        unique: true
+      - name: price
+        type: decimal
+        required: true
+      - name: mileage
+        type: integer
+      - name: color
+        type: string
+      - name: fuelType
+        type: enum
+        values: [gasoline, ethanol, flex, diesel, electric, hybrid]
+      - name: transmission
+        type: enum
+        values: [manual, automatic, cvt]
+      - name: category
+        type: enum
+        values: [hatch, sedan, suv, pickup, van, motorcycle]
+      - name: status
+        type: enum
+        values: [available, reserved, sold, maintenance]
+        default: available
+      - name: features
+        type: json
+        description: Lista de opcionais
+      - name: images
+        type: json
+      - name: description
+        type: text
+    relationships:
+      - entity: VehicleInterest
+        type: has_many
+        field: vehicle
+
+  # Interesse em veículos
+  VehicleInterest:
+    description: Registro de interesse do cliente
+    attributes:
+      - name: interestLevel
+        type: enum
+        values: [low, medium, high, urgent]
+        default: medium
+      - name: notes
+        type: text
+      - name: preferredDate
+        type: datetime
+      - name: paymentMethod
+        type: enum
+        values: [cash, financing, exchange]
+      - name: tradeInVehicle
+        type: string
+      - name: tradeInValue
+        type: decimal
+
+  # Agendamentos
+  Appointment:
+    description: Agendamentos de visitas e serviços
+    attributes:
+      - name: type
+        type: enum
+        values: [visit, test_drive, service, delivery]
+        required: true
+      - name: scheduledAt
+        type: datetime
+        required: true
+      - name: duration
+        type: integer
+        default: 60
+      - name: status
+        type: enum
+        values: [scheduled, confirmed, completed, cancelled, no_show]
+        default: scheduled
+      - name: notes
+        type: text
+      - name: reminderSent
+        type: boolean
+        default: false
+    relationships:
+      - entity: Vehicle
+        type: belongs_to
+        field: vehicle
+        optional: true
+
+  # Vendas
+  Sale:
+    description: Registro de vendas
+    attributes:
+      - name: saleDate
+        type: datetime
+        required: true
+      - name: finalPrice
+        type: decimal
+        required: true
+      - name: discount
+        type: decimal
+        default: 0
+      - name: paymentMethod
+        type: enum
+        values: [cash, financing, consortium]
+        required: true
+      - name: financingInstitution
+        type: string
+      - name: installments
+        type: integer
+      - name: monthlyPayment
+        type: decimal
+      - name: status
+        type: enum
+        values: [pending, approved, completed, cancelled]
+        default: pending
+      - name: documentsComplete
+        type: boolean
+        default: false
+
+  # Vendedores
+  Salesperson:
+    description: Equipe de vendas
+    attributes:
+      - name: fullName
+        type: string
+        required: true
+      - name: email
+        type: string
+        required: true
+      - name: phone
+        type: string
+        required: true
+      - name: registration
+        type: string
+        unique: true
+      - name: specialization
+        type: enum
+        values: [new_vehicles, used_vehicles, fleet, luxury]
+      - name: commissionRate
+        type: decimal
+        default: 2.0
+      - name: isActive
+        type: boolean
+        default: true
+    relationships:
+      - entity: Sale
+        type: has_many
+        field: salesperson
+      - entity: Appointment
+        type: has_many
+        field: salesperson
+
+  # Mensagens do chatbot
+  ChatMessage:
+    description: Histórico de conversas do chatbot
+    attributes:
+      - name: sessionId
+        type: string
+        required: true
+        index: true
+      - name: role
+        type: enum
+        values: [user, assistant, system]
+        required: true
+      - name: content
+        type: text
+        required: true
+      - name: intent
+        type: string
+        description: Intenção detectada
+      - name: sentiment
+        type: enum
+        values: [positive, neutral, negative]
+      - name: vehicleMentioned
+        type: string
+      - name: requiresFollowUp
+        type: boolean
+        default: false
+      - name: handled
+        type: boolean
+        default: false
+
+business:
+  functions:
+    - name: searchVehicles
+      description: Buscar veículos por critérios
+      type: search
+      entity: Vehicle
+      parameters:
+        - name: brand
+        - name: category
+        - name: maxPrice
+        - name: fuelType
+
+    - name: scheduleTestDrive
+      description: Agendar test drive
+      type: workflow
+      steps:
+        - validate: Customer
+        - validate: Vehicle
+        - create: Appointment
+        - notify: customer
+
+    - name: calculateFinancing
+      description: Simular financiamento
+      type: computation
+      parameters:
+        - name: vehiclePrice
+          type: decimal
+        - name: downPayment
+          type: decimal
+        - name: installments
+          type: integer
+
+    - name: chatbotResponse
+      description: Processar mensagem do chatbot
+      type: llm
+      agent: atendente-virtual
+      capabilities:
+        - classifyIntent
+        - answerQuestions
+        - recommendVehicles
+        - scheduleAppointment
+
+    - name: analyzeCustomerSentiment
+      description: Analisar sentimento do cliente
+      type: llm
+      agent: analista-sentimento
+
+    - name: generateVehicleDescription
+      description: Gerar descrição criativa do veículo
+      type: llm
+      agent: redator
+
+  channels:
+    - name: website-chat
+      type: websocket
+      handler: chatbotResponse
+
+    - name: whatsapp
+      type: webhook
+      handler: chatbotResponse
+
+    - name: email
+      type: smtp
+      handler: notifyCustomer
+
+    - name: telegram
+      type: telegram
+      handler: chatbotResponse
+
+  rules:
+    - name: notifyOnHighInterest
+      when: VehicleInterest.interestLevel == 'high'
+      then: notifySalesTeam
+
+    - name: remindAppointment
+      when: Appointment.scheduledAt < now + 24h
+      and: Appointment.reminderSent == false
+      then: sendReminder
+
+    - name: followUpChat
+      when: ChatMessage.requiresFollowUp == true
+      and: ChatMessage.handled == false
+      then: assignToSalesperson
+
+users:
+  - role: admin
+    permissions: ['*']
+
+  - role: salesperson
+    permissions:
+      - Customer:read,write
+      - Vehicle:read
+      - Sale:read,write
+      - Appointment:read,write
+      - ChatMessage:read
+
+  - role: manager
+    permissions:
+      - Customer:read
+      - Vehicle:read,write
+      - Sale:read
+      - Salesperson:read,write
+      - ChatMessage:read
+
+ui:
+  pages:
+    - name: dashboard
+      title: Dashboard
+      icon: dashboard
+      widgets:
+        - type: stats
+          title: Vendas do Mês
+          source: Sale:count
+          filter: this_month
+        - type: list
+          title: Agendamentos Hoje
+          source: Appointment
+          filter: scheduledAt >= today
+
+    - name: vehicles
+      title: Veículos
+      entity: Vehicle
+      columns: [brand, model, year, price, status]
+
+    - name: customers
+      title: Clientes
+      entity: Customer
+      columns: [fullName, email, phone, status]
+
+    - name: chat
+      title: Atendimento
+      entity: ChatMessage
+      view: chat
+
+integrations:
+  apis:
+    - name: sinesp
+      base_path: /sinesp
+      version: v1
+      endpoints: []
+      
+    - name: fipe
+      base_path: /fipe
+      version: v1
+      endpoints: []

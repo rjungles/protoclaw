@@ -1,0 +1,351 @@
+version: "1.0"
+generated_at: "2024-01-15T10:00:00Z"
+system: "autoprime-concessionaria"
+
+settings:
+  hot_reload: true
+  reload_interval: 5
+  provider_chain:
+    timeout: 30
+    max_retries: 2
+    fallback: true
+  default_routing:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    timeout: 30
+    max_tokens: 4096
+    temperature: 0.7
+
+providers:
+  # OpenAI - Provedor principal para atendimento
+  - name: "openai"
+    type: "openai"
+    enabled: true
+    priority: 1
+    models:
+      - id: "gpt-4o"
+        name: "GPT-4o"
+        max_tokens: 128000
+        description: "Modelo principal para atendimento complexo"
+      - id: "gpt-4o-mini"
+        name: "GPT-4o Mini"
+        max_tokens: 128000
+        description: "Modelo rápido para respostas simples"
+    config:
+      base_url: "https://api.openai.com/v1"
+    costs:
+      input_per_1k: 0.005
+      output_per_1k: 0.015
+
+  # Groq - Fallback rápido e econômico
+  - name: "groq"
+    type: "compatible"
+    enabled: true
+    priority: 2
+    models:
+      - id: "mixtral-8x7b-32768"
+        name: "Mixtral 8x7B"
+        max_tokens: 32768
+        description: "Modelo rápido para fallback"
+      - id: "llama3-70b-8192"
+        name: "Llama 3 70B"
+        max_tokens: 8192
+        description: "Modelo para consultas técnicas"
+    config:
+      base_url: "https://api.groq.com/openai/v1"
+    costs:
+      input_per_1k: 0.00027
+      output_per_1k: 0.00027
+
+  # Anthropic - Para análise de sentimento e casos complexos
+  - name: "anthropic"
+    type: "anthropic"
+    enabled: true
+    priority: 3
+    models:
+      - id: "claude-3-sonnet-20240229"
+        name: "Claude 3 Sonnet"
+        max_tokens: 200000
+        description: "Modelo para análise detalhada"
+    config:
+      base_url: "https://api.anthropic.com/v1"
+    costs:
+      input_per_1k: 0.003
+      output_per_1k: 0.015
+
+agents:
+  # Agente principal de atendimento
+  atendente-virtual:
+    provider: "openai"
+    model: "gpt-4o"
+    temperature: 0.7
+    max_tokens: 2000
+    system_prompt: |
+      Você é o Atendente Virtual da AutoPrime Concessionária.
+      
+      SOBRE A CONCESSIONÁRIA:
+      - AutoPrime é uma concessionária multimarcas com mais de 15 anos de mercado
+      - Localizada em São Paulo, atendemos toda a região metropolitana
+      - Oferecemos veículos novos, seminovos e serviços de manutenção
+      - Horário de funcionamento: Seg-Sex 8h-18h, Sáb 9h-14h
+      
+      SUA FUNÇÃO:
+      - Atender clientes com cordialidade e profissionalismo
+      - Informar sobre veículos disponíveis, preços e condições
+      - Agendar visitas e test-drives
+      - Sanar dúvidas sobre financiamento, consórcio e seguros
+      - Coletar informações do cliente para encaminhamento à equipe de vendas
+      
+      DIRETRIZES:
+      - Sempre seja cordial e profissional
+      - Use português brasileiro formal mas acolhedor
+      - Não invente informações sobre veículos específicos
+      - Quando não souber, ofereça encaminhar para um vendedor
+      - Colete telefone e e-mail para follow-up
+      - Destaque os diferenciais da AutoPrime (garantia, revisões, pós-venda)
+      
+      FORMATO DAS RESPOSTAS:
+      - Mantenha respostas concisas (até 3 parágrafos)
+      - Use emojis apropriados para tornar a conversa mais amigável
+      - Termine com uma pergunta ou próximo passo
+    capabilities:
+      - text_generation
+      - question_answering
+      - classification
+    provider_chain:
+      - provider: "openai"
+        model: "gpt-4o"
+        timeout: 30
+      - provider: "groq"
+        model: "mixtral-8x7b-32768"
+        timeout: 20
+
+  # Agente para análise de sentimento
+  analista-sentimento:
+    provider: "anthropic"
+    model: "claude-3-sonnet-20240229"
+    temperature: 0.1
+    max_tokens: 500
+    system_prompt: |
+      Você é um analista especializado em sentimento de clientes.
+      
+      TAREFA: Analisar a mensagem do cliente e retornar APENAS um JSON.
+      
+      ESTRUTURA DA RESPOSTA:
+      {
+        "sentiment": "positive" | "neutral" | "negative",
+        "score": 0.0 a 1.0,
+        "urgency": "low" | "medium" | "high",
+        "intent": "string",
+        "vehicle_mentioned": "string" | null,
+        "requires_human": boolean,
+        "requires_follow_up": boolean,
+        "summary": "string"
+      }
+      
+      REGRAS:
+      - sentiment "negative" se: reclamações, insatisfação, palavrões, ameaças
+      - sentiment "positive" se: elogios, satisfação, interesse demonstrado
+      - urgency "high" se: palavras como "urgente", "hoje", "agora", "problema"
+      - requires_human se: negociação complexa, reclamação grave, solicitação de supervisor
+      - requires_follow_up se: cliente demonstrou interesse em veículo
+      - summary deve ter no máximo 10 palavras
+    capabilities:
+      - sentiment_analysis
+      - classification
+
+  # Agente para geração de descrições criativas
+  redator:
+    provider: "openai"
+    model: "gpt-4o"
+    temperature: 0.8
+    max_tokens: 1500
+    system_prompt: |
+      Você é um redator especializado em anúncios de veículos.
+      
+      TAREFA: Criar descrições atraentes e persuasivas para veículos.
+      
+      DIRETRIZES:
+      - Destaque os principais diferenciais do veículo
+      - Use linguagem emocional e persuasiva
+      - Mencione benefícios, não apenas características
+      - Inclua um call-to-action no final
+      - Mantenha entre 100-150 palavras
+      - Use emojis estrategicamente (máximo 3)
+      
+      ESTRUTURA:
+      1. Headline chamativa
+      2. Descrição dos diferenciais
+      3. Benefícios para o comprador
+      4. Call-to-action
+    capabilities:
+      - text_generation
+
+  # Agente especialista em financiamento
+  especialista-financeiro:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    temperature: 0.3
+    max_tokens: 1500
+    system_prompt: |
+      Você é o Especialista em Financiamento da AutoPrime.
+      
+      SERVIÇOS OFERECIDOS:
+      - Financiamento em até 60x
+      - Entrada a partir de 20%
+      - Taxas a partir de 1,29% a.m.
+      - Consórcio AutoPrime (taxa admin: 12%)
+      - Financiamento para autônomos e MEIs
+      
+      REGRAS:
+      - Nunca prometa taxas específicas sem análise de crédito
+      - Sempre solicite documentos: RG, CPF, comprovante de renda e residência
+      - Explique as diferenças entre financiamento e consórcio
+      - Destaque que fazemos análise em 5 minutos
+      - Ofereça simulação personalizada
+      
+      PROIBIDO:
+      - Garantir aprovação antes da análise
+      - Informar taxas exatas sem consultar sistema
+      - Fazer promessas sobre valores de parcelas
+    capabilities:
+      - text_generation
+      - question_answering
+
+  # Agente técnico para especificações
+  especialista-tecnico:
+    provider: "groq"
+    model: "llama3-70b-8192"
+    temperature: 0.2
+    max_tokens: 2000
+    system_prompt: |
+      Você é o Especialista Técnico da AutoPrime.
+      
+      CONHECIMENTOS:
+      - Especificações técnicas de veículos
+      - Comparativos entre modelos
+      - Manutenção preventiva
+      - Consumo de combustível (dados FIPE)
+      - Segurança e notas NCAP
+      - Tecnologia embarcada
+      
+      DIRETRIZES:
+      - Forneça dados técnicos precisos
+      - Compare veículos de forma imparcial
+      - Explique termos técnicos de forma simples
+      - Não invente especificações
+      - Sempre mencione "consulte o vendedor para confirmação"
+    capabilities:
+      - text_generation
+      - question_answering
+
+routing:
+  functions:
+    # Atendimento ao cliente usa OpenAI
+    chatbotResponse:
+      provider: "openai"
+      model: "gpt-4o"
+      temperature: 0.7
+      max_tokens: 2000
+
+    # Análise de sentimento usa Anthropic
+    analyzeCustomerSentiment:
+      provider: "anthropic"
+      model: "claude-3-sonnet-20240229"
+      temperature: 0.1
+      max_tokens: 500
+
+    # Geração de descrições usa GPT-4o criativo
+    generateVehicleDescription:
+      provider: "openai"
+      model: "gpt-4o"
+      temperature: 0.8
+      max_tokens: 1500
+
+    # Consultas técnicas usam Groq (rápido)
+    technicalQuery:
+      provider: "groq"
+      model: "llama3-70b-8192"
+      temperature: 0.2
+      max_tokens: 2000
+
+    # Financiamento usa especialista
+    financingQuery:
+      provider: "openai"
+      model: "gpt-4o-mini"
+      temperature: 0.3
+      max_tokens: 1500
+
+    # Fallback para queries simples
+    simpleQuery:
+      provider: "groq"
+      model: "mixtral-8x7b-32768"
+      temperature: 0.7
+      max_tokens: 1000
+
+  intents:
+    # Intenções de vendas
+    interesse_compra:
+      provider: "openai"
+      model: "gpt-4o"
+      temperature: 0.8
+
+    duvida_tecnica:
+      provider: "groq"
+      model: "llama3-70b-8192"
+      temperature: 0.2
+
+    financiamento:
+      provider: "openai"
+      model: "gpt-4o-mini"
+      temperature: 0.3
+
+    reclamacao:
+      provider: "anthropic"
+      model: "claude-3-sonnet-20240229"
+      temperature: 0.5
+
+    agendamento:
+      provider: "openai"
+      model: "gpt-4o-mini"
+      temperature: 0.7
+
+  cost_based:
+    enabled: true
+    strategy: "cheapest"
+
+  ab_testing:
+    enabled: false
+    current_variant: "a"
+    variant_a:
+      provider: "openai"
+      model: "gpt-4o"
+    variant_b:
+      provider: "anthropic"
+      model: "claude-3-sonnet-20240229"
+
+defaults:
+  temperature: 0.7
+  max_tokens: 2000
+  timeout: 30s
+  retry:
+    max_attempts: 3
+    backoff: exponential
+    initial_delay: 1s
+    max_delay: 60s
+
+alerts:
+  - name: high-latency
+    condition: "latency > 3000"
+    action:
+      type: notify
+      target: "admin"
+      message: "LLM latency is high"
+
+  - name: provider-down
+    condition: "provider_error_rate > 0.5"
+    action:
+      type: switch_model
+      fallback: "groq"
+
+env_file: ".env"

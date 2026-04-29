@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/sipeed/picoclaw/pkg/agentos"
+	"github.com/sipeed/picoclaw/pkg/agentos/llm"
 	mcpserver "github.com/sipeed/picoclaw/pkg/mcp/server"
 	"github.com/sipeed/picoclaw/pkg/manifest"
 )
@@ -45,6 +46,7 @@ operar em comandos que suportam múltiplos sistemas.`,
 		newListCommand(),
 		newVersionsCommand(),
 		newConfigCommand(),
+		newLLMCommand(),
 	)
 
 	return cmd
@@ -1081,6 +1083,363 @@ func newConfigCommand() *cobra.Command {
 	getCmd.Flags().StringVar(&dataDir, "data-dir", "", "Data directory for AgentOS")
 
 	cmd.AddCommand(getCmd)
+
+	return cmd
+}
+
+// newLLMCommand cria o comando para gerenciar configuração LLM
+func newLLMCommand() *cobra.Command {
+	var dataDir, system string
+
+	cmd := &cobra.Command{
+		Use:   "llm",
+		Short: "Gerencia configuração LLM (Large Language Models)",
+		Long: `Gerencia provedores LLM, modelos e regras de roteamento.
+
+Suporta provedores: OpenAI, Anthropic, Google, Stepfun, NVIDIA, e OpenAI-Compatible (Groq, Together AI, Fireworks, OpenRouter, Ollama, etc.).
+
+As configurações são salvas em arquivos separados por sistema e suportam hot-reload.`,
+	}
+
+	// Subcomando: init - Cria configuração LLM inicial
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Inicializa configuração LLM para um sistema",
+		Long:  `Cria um arquivo de configuração LLM com valores padrão.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dataDir = getDataDir(dataDir)
+
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			// Se não especificado, usa o sistema padrão
+			if system == "" {
+				system = registry.Default
+			}
+
+			sys, ok := registry.Systems[system]
+			if !ok {
+				return fmt.Errorf("system not found: %s", system)
+			}
+
+			// Cria diretório para o sistema
+			systemDir := filepath.Join(dataDir, system, "config")
+			if err := os.MkdirAll(systemDir, 0755); err != nil {
+				return fmt.Errorf("failed to create config directory: %w", err)
+			}
+
+			// Cria arquivo de configuração LLM
+			configPath := filepath.Join(systemDir, "llm.yaml")
+
+			// Verifica se já existe
+			if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+				fmt.Printf("Configuração LLM já existe: %s\n", configPath)
+				return nil
+			}
+
+			// Cria configuração padrão
+			defaultConfig := fmt.Sprintf(`# Configuração LLM para %s
+# Gerado automaticamente pelo AgentOS
+version: "1.0"
+system: "%s"
+
+settings:
+  hot_reload: true
+  reload_interval: 5
+  provider_chain:
+    timeout: 30
+    max_retries: 2
+    fallback: true
+  default_routing:
+    provider: "openai"
+    model: "gpt-4o-mini"
+    timeout: 30
+    max_tokens: 4096
+    temperature: 0.7
+
+providers:
+  # Exemplo: OpenAI (descomente e configure)
+  # - name: "openai"
+  #   type: "openai"
+  #   enabled: false
+  #   priority: 1
+  #   models:
+  #     - id: "gpt-4o"
+  #       name: "GPT-4o"
+  #       max_tokens: 128000
+  #     - id: "gpt-4o-mini"
+  #       name: "GPT-4o Mini"
+  #       max_tokens: 128000
+  #   config:
+  #     base_url: "https://api.openai.com/v1"
+  #   costs:
+  #     input_per_1k: 0.005
+  #     output_per_1k: 0.015
+
+  # Exemplo: Anthropic (descomente e configure)
+  # - name: "anthropic"
+  #   type: "anthropic"
+  #   enabled: false
+  #   priority: 2
+  #   models:
+  #     - id: "claude-3-opus-20240229"
+  #       name: "Claude 3 Opus"
+  #       max_tokens: 200000
+  #   config:
+  #     base_url: "https://api.anthropic.com/v1"
+
+  # Exemplo: Groq (OpenAI-Compatible)
+  # - name: "groq"
+  #   type: "compatible"
+  #   enabled: false
+  #   priority: 3
+  #   models:
+  #     - id: "mixtral-8x7b-32768"
+  #       name: "Mixtral 8x7B"
+  #       max_tokens: 32768
+  #   config:
+  #     base_url: "https://api.groq.com/openai/v1"
+
+agents: {}
+
+routing:
+  functions: {}
+  intents: {}
+  cost_based:
+    enabled: false
+  ab_testing:
+    enabled: false
+
+defaults:
+  temperature: 0.7
+  max_tokens: 2000
+  timeout: 30s
+  retry:
+    max_attempts: 3
+    backoff: exponential
+
+env_file: ".env"
+`, system, system)
+
+			if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+				return fmt.Errorf("failed to write config: %w", err)
+			}
+
+			// Cria arquivo .env vazio
+			envPath := filepath.Join(systemDir, ".env")
+			if _, err := os.Stat(envPath); os.IsNotExist(err) {
+				envContent := `# LLM API Keys
+# Descomente e configure as chaves necessárias
+
+# OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...
+# GROQ_API_KEY=gsk_...
+# TOGETHER_API_KEY=...
+# FIREWORKS_API_KEY=...
+# OPENROUTER_API_KEY=...
+# GOOGLE_API_KEY=...
+# NVIDIA_API_KEY=nvapi-...
+# STEPFUN_API_KEY=...
+`
+				os.WriteFile(envPath, []byte(envContent), 0600)
+			}
+
+			fmt.Printf("✓ Configuração LLM criada: %s\n", configPath)
+			fmt.Printf("✓ Arquivo de variáveis de ambiente: %s\n", envPath)
+			fmt.Println("\nPróximos passos:")
+			fmt.Println("1. Configure suas chaves API no arquivo .env")
+			fmt.Println("2. Ative os provedores desejados em llm.yaml")
+			fmt.Println("3. Use 'agentos llm validate' para validar")
+			fmt.Println("4. Use 'agentos llm status' para verificar status")
+
+			return nil
+		},
+	}
+
+	initCmd.Flags().StringVar(&dataDir, "data-dir", "", "Diretório de dados")
+	initCmd.Flags().StringVar(&system, "system", "", "Nome do sistema")
+
+	// Subcomando: validate - Valida configuração
+	validateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Valida configuração LLM",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dataDir = getDataDir(dataDir)
+
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			if system == "" {
+				system = registry.Default
+			}
+
+			sys, ok := registry.Systems[system]
+			if !ok {
+				return fmt.Errorf("system not found: %s", system)
+			}
+
+			configPath := filepath.Join(dataDir, system, "config", "llm.yaml")
+			if _, err := os.Stat(configPath); os.IsNotExist(err) {
+				return fmt.Errorf("configuração LLM não encontrada. Execute 'agentos llm init' primeiro")
+			}
+
+			// Carrega e valida
+			config, err := llm.LoadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("erro de validação: %w", err)
+			}
+
+			fmt.Printf("✓ Configuração válida para sistema: %s\n", sys.Name)
+			fmt.Printf("  Provedores: %d\n", len(config.Providers))
+			fmt.Printf("  Agentes: %d\n", len(config.Agents))
+			fmt.Printf("  Hot-reload: %v\n", config.Settings.HotReload)
+
+			// Verifica provedores ativos
+			enabled := 0
+			for _, p := range config.Providers {
+				if p.Enabled {
+					enabled++
+				}
+			}
+			fmt.Printf("  Provedores ativos: %d\n", enabled)
+
+			if enabled == 0 {
+				fmt.Println("\n⚠ Aviso: Nenhum provedor ativo!")
+			}
+
+			return nil
+		},
+	}
+
+	validateCmd.Flags().StringVar(&dataDir, "data-dir", "", "Diretório de dados")
+	validateCmd.Flags().StringVar(&system, "system", "", "Nome do sistema")
+
+	// Subcomando: status - Mostra status
+	statusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Mostra status da configuração LLM",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dataDir = getDataDir(dataDir)
+
+			registry, err := LoadRegistry(dataDir)
+			if err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+
+			targetSystem := system
+			if targetSystem == "" {
+				targetSystem = registry.Default
+			}
+
+			if targetSystem == "" || targetSystem == "all" {
+				// Mostra todos os sistemas
+				fmt.Println("=== Configuração LLM por Sistema ===")
+				for name, sys := range registry.Systems {
+					configPath := filepath.Join(dataDir, name, "config", "llm.yaml")
+					if _, err := os.Stat(configPath); os.IsNotExist(err) {
+						fmt.Printf("\n%s: (sem configuração LLM)\n", name)
+						continue
+					}
+
+					config, err := llm.LoadConfig(configPath)
+					if err != nil {
+						fmt.Printf("\n%s: ERRO - %v\n", name, err)
+						continue
+					}
+
+					fmt.Printf("\n%s (%s):\n", name, sys.Name)
+					enabled := 0
+					for _, p := range config.Providers {
+						if p.Enabled {
+							status := "✓"
+							fmt.Printf("  %s %s (%s) - %d modelos\n", status, p.Name, p.Type, len(p.Models))
+							enabled++
+						} else {
+							fmt.Printf("  ○ %s (%s) - desativado\n", p.Name, p.Type)
+						}
+					}
+					if enabled == 0 {
+						fmt.Println("  (nenhum provedor ativo)")
+					}
+				}
+			} else {
+				// Mostra sistema específico
+				configPath := filepath.Join(dataDir, targetSystem, "config", "llm.yaml")
+				if _, err := os.Stat(configPath); os.IsNotExist(err) {
+					return fmt.Errorf("configuração LLM não encontrada para %s", targetSystem)
+				}
+
+				config, err := llm.LoadConfig(configPath)
+				if err != nil {
+					return fmt.Errorf("erro ao carregar config: %w", err)
+				}
+
+				fmt.Printf("=== Configuração LLM: %s ===\n", targetSystem)
+				fmt.Printf("Versão: %s\n", config.Version)
+				fmt.Printf("Hot-reload: %v\n", config.Settings.HotReload)
+				fmt.Printf("\nProvedores:\n")
+				for _, p := range config.Providers {
+					status := "○"
+					if p.Enabled {
+						status = "✓"
+					}
+					fmt.Printf("  %s %s (%s) - %d modelos, prioridade %d\n",
+						status, p.Name, p.Type, len(p.Models), p.Priority)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	statusCmd.Flags().StringVar(&dataDir, "data-dir", "", "Diretório de dados")
+	statusCmd.Flags().StringVar(&system, "system", "all", "Nome do sistema (ou 'all' para todos)")
+
+	// Subcomando: provider - Gerencia provedores
+	providerCmd := &cobra.Command{
+		Use:   "provider",
+		Short: "Gerencia provedores LLM",
+	}
+
+	// provider add
+	providerAddCmd := &cobra.Command{
+		Use:   "add <name>",
+		Short: "Adiciona um novo provedor",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			providerName := args[0]
+			providerType, _ := cmd.Flags().GetString("type")
+			baseURL, _ := cmd.Flags().GetString("url")
+			model, _ := cmd.Flags().GetString("model")
+
+			dataDir = getDataDir(dataDir)
+			if system == "" {
+				registry, _ := LoadRegistry(dataDir)
+				system = registry.Default
+			}
+
+			fmt.Printf("Adicionando provedor: %s (%s)\n", providerName, providerType)
+			fmt.Printf("  Base URL: %s\n", baseURL)
+			fmt.Printf("  Modelo: %s\n", model)
+			fmt.Println("\nPara concluir, edite o arquivo llm.yaml manualmente.")
+
+			return nil
+		},
+	}
+
+	providerAddCmd.Flags().StringVar(&dataDir, "data-dir", "", "Diretório de dados")
+	providerAddCmd.Flags().StringVar(&system, "system", "", "Nome do sistema")
+	providerAddCmd.Flags().String("type", "compatible", "Tipo do provedor (openai, anthropic, compatible)")
+	providerAddCmd.Flags().String("url", "", "URL base da API")
+	providerAddCmd.Flags().String("model", "", "Modelo padrão")
+
+	providerCmd.AddCommand(providerAddCmd)
+
+	cmd.AddCommand(initCmd, validateCmd, statusCmd, providerCmd)
 
 	return cmd
 }
