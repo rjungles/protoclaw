@@ -816,11 +816,12 @@ type ToolsConfig struct {
 	SendFile        ToolConfig         `json:"send_file"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
 	SendTTS         ToolConfig         `json:"send_tts"          yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
 	Spawn           ToolConfig         `json:"spawn"             yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
-	SpawnStatus     ToolConfig         `json:"spawn_status"      yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
-	SPI             ToolConfig         `json:"spi"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPI_"`
-	Subagent        ToolConfig         `json:"subagent"          yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
-	WebFetch        ToolConfig         `json:"web_fetch"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
-	WriteFile       ToolConfig         `json:"write_file"        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	SpawnStatus ToolConfig `json:"spawn_status" yaml:"-" envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
+	SPI ToolConfig `json:"spi" yaml:"-" envPrefix:"PICOCLAW_TOOLS_SPI_"`
+	Subagent ToolConfig `json:"subagent" yaml:"-" envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
+	WebFetch ToolConfig `json:"web_fetch" yaml:"-" envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
+	WriteFile ToolConfig `json:"write_file" yaml:"-" envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	AgentOS ToolConfig `json:"agentos" yaml:"agentos,omitempty" envPrefix:"PICOCLAW_TOOLS_AGENTOS_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -1508,6 +1509,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.WriteFile.Enabled
 	case "mcp":
 		return t.MCP.Enabled
+	case "agentos":
+		return t.AgentOS.Enabled
 	default:
 		return true
 	}

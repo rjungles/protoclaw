@@ -117,6 +117,13 @@ func NewAgentInstance(
 	if cfg.Tools.IsToolEnabled("append_file") {
 		toolsRegistry.Register(tools.NewAppendFileTool(workspace, restrict, allowWritePaths))
 	}
+	
+	// Register AgentOS tools
+	if cfg.Tools.IsToolEnabled("agentos") {
+		toolsRegistry.Register(tools.NewExecAgentOSTool())
+		toolsRegistry.Register(tools.NewAgentOSGenerateManifestTool())
+		toolsRegistry.Register(tools.NewAgentOSQueryTool())
+	}
 
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessions := initSessionStore(sessionsDir)
