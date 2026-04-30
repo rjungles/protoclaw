@@ -927,7 +927,9 @@ PICOCLAW_DATABASE_CONNECTION  # Connection string
 
 ## Recursos Adicionais
 
-- [Documentação Sintetizada das Etapas](./agentos-etapas-sintetizado.md)
+- [AgentOS Security Architecture](./AGENTOS_SECURITY_IMPLEMENTATION.md)
+- [AgentOS Migration Guide](./AGENTOS_SECURITY_MIGRATION.md)
+- [AgentOS Tools](./AGENTOS_TOOLS.md)
 - [Exemplos de Manifestos](../examples/manifests/)
 - [API Reference](https://docs.picoclaw.io/)
 - [Comunidade Discord](https://discord.gg/V4sAZ9XWpN)

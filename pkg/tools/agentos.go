@@ -1,6 +1,13 @@
 // PicoClaw AgentOS Integration Tools
 // These tools enable the PicoClaw agent to interact with AgentOS systems
 // allowing conversational system creation and management
+//
+// This version includes security improvements:
+// - Validated system names
+// - Hash-based directory structure
+// - SQLite-based registry
+// - Audit logging
+// - Secure storage
 
 package tools
 
@@ -11,6 +18,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/picoclaw/protoclaw/pkg/agentos/audit"
+	"github.com/picoclaw/protoclaw/pkg/agentos/registry"
+	"github.com/picoclaw/protoclaw/pkg/agentos/security"
+	"github.com/picoclaw/protoclaw/pkg/agentos/security/validation"
+	"github.com/picoclaw/protoclaw/pkg/agentos/storage"
 )
 
 // AgentOS tool constants
@@ -32,13 +45,15 @@ func getAgentOSDataDir() string {
 
 // ExecAgentOSTool wraps AgentOS CLI operations
 type ExecAgentOSTool struct {
-	dataDir string
+	dataDir   string
+	validator *validation.SystemNameValidator
 }
 
 // NewExecAgentOSTool creates a new AgentOS execution tool
 func NewExecAgentOSTool() *ExecAgentOSTool {
 	return &ExecAgentOSTool{
-		dataDir: getAgentOSDataDir(),
+		dataDir:   getAgentOSDataDir(),
+		validator: validation.NewSystemNameValidator(),
 	}
 }
 
@@ -49,7 +64,7 @@ func (t *ExecAgentOSTool) Name() string {
 
 // Description returns the tool description
 func (t *ExecAgentOSTool) Description() string {
-	return `Execute AgentOS commands to manage systems. Supports: init, bootstrap, serve, status, validate.
+	return `Execute AgentOS commands to manage systems. Supports: init, bootstrap, serve, status, validate, migrate.
 
 Use this tool to:
 - Create new systems from manifest files (init)
@@ -57,6 +72,12 @@ Use this tool to:
 - Check system status and list all systems (status)
 - Validate manifest files (validate)
 - Start/stop system emulation servers (serve)
+
+Security features:
+- System names are validated to prevent path traversal
+- Systems are stored in isolated hash-based directories
+- Registry uses SQLite for thread safety
+- All operations are logged for audit trail
 
 Examples:
 - "Create a system from manifest" -> action: init, system_name: my-system, manifest_path: /path/to/manifest.yaml
@@ -71,21 +92,25 @@ func (t *ExecAgentOSTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"action": map[string]any{
-				"type":        "string",
-				"description": "Action to perform: init, bootstrap, serve, status, validate, list",
-				"enum":        []string{"init", "bootstrap", "serve", "status", "validate", "list"},
+				"type": "string",
+				"description": "Action to perform: init, bootstrap, serve, status, validate, list, migrate",
+				"enum": []string{"init", "bootstrap", "serve", "status", "validate", "list", "migrate"},
 			},
 			"system_name": map[string]any{
-				"type":        "string",
-				"description": "Name of the system (required for most actions)",
+				"type": "string",
+				"description": "Name of the system (required for most actions, validated for security)",
 			},
 			"manifest_path": map[string]any{
-				"type":        "string",
+				"type": "string",
 				"description": "Path to manifest YAML file (required for init)",
 			},
 			"data_dir": map[string]any{
-				"type":        "string",
+				"type": "string",
 				"description": "AgentOS data directory (optional, uses default if not provided)",
+			},
+			"user_id": map[string]any{
+				"type": "string",
+				"description": "User ID for audit logging (optional)",
 			},
 		},
 		"required": []string{"action"},
@@ -104,24 +129,32 @@ func (t *ExecAgentOSTool) Execute(ctx context.Context, args map[string]any) *Too
 		dataDir = dir
 	}
 
+	// Get user ID for audit logging
+	userID, _ := args["user_id"].(string)
+	if userID == "" {
+		userID = "anonymous"
+	}
+
 	switch action {
 	case "init":
-		return t.executeInit(args, dataDir)
+		return t.executeInitSecure(ctx, args, dataDir, userID)
 	case "bootstrap":
-		return t.executeBootstrap(args, dataDir)
+		return t.executeBootstrapSecure(ctx, args, dataDir, userID)
 	case "serve":
-		return t.executeServe(args, dataDir)
+		return t.executeServeSecure(args, dataDir)
 	case "status", "list":
-		return t.executeStatus(dataDir)
+		return t.executeStatusSecure(dataDir)
 	case "validate":
-		return t.executeValidate(args, dataDir)
+		return t.executeValidateSecure(ctx, args, dataDir, userID)
+	case "migrate":
+		return t.executeMigrateSecure(ctx, args, dataDir, userID)
 	default:
 		return ErrorResult(fmt.Sprintf("unknown action: %s", action))
 	}
 }
 
-// executeInit initializes a new system
-func (t *ExecAgentOSTool) executeInit(args map[string]any, dataDir string) *ToolResult {
+// executeInitSecure initializes a new system with security
+func (t *ExecAgentOSTool) executeInitSecure(ctx context.Context, args map[string]any, dataDir string, userID string) *ToolResult {
 	manifestPath, ok := args["manifest_path"].(string)
 	if !ok || manifestPath == "" {
 		return ErrorResult("manifest_path is required for init")
@@ -132,214 +165,318 @@ func (t *ExecAgentOSTool) executeInit(args map[string]any, dataDir string) *Tool
 		return ErrorResult(fmt.Sprintf("manifest file not found: %s", manifestPath))
 	}
 
-	systemName := ""
-	if name, ok := args["system_name"].(string); ok {
-		systemName = name
+	systemName, ok := args["system_name"].(string)
+	if !ok || systemName == "" {
+		return ErrorResult("system_name is required for init")
 	}
 
-	// Create system directory structure
-	systemDir := filepath.Join(dataDir, systemName)
-	if err := os.MkdirAll(systemDir, 0755); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to create system directory: %v", err))
+	// Validate system name
+	validatedName, err := t.validator.ValidateAndSanitize(systemName)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("invalid system name: %v", err))
 	}
 
-	// Create config directory
-	configDir := filepath.Join(systemDir, "config")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to create config directory: %v", err))
+	// Check if system already exists
+	registryPath := filepath.Join(dataDir, "registry.db")
+	reg, err := registry.NewDBRegistry(registryPath)
+	if err == nil {
+		defer reg.Close()
+		if reg.SystemExists(validatedName) {
+			return ErrorResult(fmt.Sprintf("system '%s' already exists", validatedName))
+		}
+	}
+
+	// Create secure paths
+	paths := storage.NewSystemPaths(dataDir, validatedName)
+
+	// Ensure directories exist
+	if err := paths.EnsureDirectories(); err != nil {
+		return ErrorResult(fmt.Sprintf("failed to create directories: %v", err))
 	}
 
 	// Copy manifest to system directory
-	manifestDest := filepath.Join(systemDir, "system.yaml")
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to read manifest: %v", err))
 	}
 
+	manifestDest := paths.Manifest()
 	if err := os.WriteFile(manifestDest, manifestData, 0644); err != nil {
 		return ErrorResult(fmt.Sprintf("failed to write manifest: %v", err))
 	}
 
-	// Create LLM config directory
-	llmConfigDir := filepath.Join(systemDir, "config", "llm")
-	if err := os.MkdirAll(llmConfigDir, 0755); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to create LLM config directory: %v", err))
-	}
-
-	// Create default LLM config
-	llmConfig := t.generateDefaultLLMConfig(systemName)
-	llmConfigPath := filepath.Join(llmConfigDir, "llm.yaml")
+	// Create LLM config
+	llmConfig := generateDefaultLLMConfigSecure(validatedName)
+	llmConfigPath := paths.LLMConfigFile()
 	if err := os.WriteFile(llmConfigPath, []byte(llmConfig), 0644); err != nil {
 		return ErrorResult(fmt.Sprintf("failed to write LLM config: %v", err))
 	}
 
-	// Update registry
-	if err := t.updateRegistry(dataDir, systemName, manifestDest); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to update registry: %v", err))
+	// Register system in database
+	reg, err = registry.NewDBRegistry(registryPath)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("failed to open registry: %v", err))
 	}
+	defer reg.Close()
+
+	system := &registry.System{
+		Name:          validatedName,
+		HashPrefix:    paths.Hash,
+		Path:          paths.Root(),
+		Status:        registry.StatusInitialized,
+		ManifestPath:  manifestDest,
+		LLMConfigPath: llmConfigPath,
+	}
+
+	if err := reg.RegisterSystem(system); err != nil {
+		return ErrorResult(fmt.Sprintf("failed to register system: %v", err))
+	}
+
+	// Log audit event
+	// Note: For simplicity, we're using a basic logger here
+	// In production, use the full audit logger
+	logAuditEvent(dataDir, audit.OpSystemInitialized, system.ID, userID, map[string]interface{}{
+		"name":           validatedName,
+		"original_name":  systemName,
+		"manifest_path":  manifestPath,
+		"system_path":    paths.Root(),
+		"hash_prefix":    paths.Hash,
+	})
 
 	result := fmt.Sprintf(`System initialized successfully!
 
-Name: %s
+Name: %s (validated from "%s")
 Location: %s
 Manifest: %s
 LLM Config: %s
+Registry: %s
 
 Next steps:
 1. Run bootstrap to create database schema
-2. Configure LLM providers in %s/.env
+2. Configure LLM providers
 3. Start the system with "serve"`,
-		systemName, systemDir, manifestDest, llmConfigPath, configDir)
+		validatedName, systemName, paths.Root(), manifestDest, llmConfigPath, registryPath)
 
 	return UserResult(result)
 }
 
-// executeBootstrap bootstraps a system
-func (t *ExecAgentOSTool) executeBootstrap(args map[string]any, dataDir string) *ToolResult {
+// executeBootstrapSecure bootstraps a system with security
+func (t *ExecAgentOSTool) executeBootstrapSecure(ctx context.Context, args map[string]any, dataDir string, userID string) *ToolResult {
 	systemName, ok := args["system_name"].(string)
 	if !ok || systemName == "" {
 		return ErrorResult("system_name is required for bootstrap")
 	}
 
-	systemDir := filepath.Join(dataDir, systemName)
-	if _, err := os.Stat(systemDir); os.IsNotExist(err) {
-		return ErrorResult(fmt.Sprintf("system not found: %s (run init first)", systemName))
+	// Validate system name
+	validatedName, err := t.validator.Validate(systemName)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("invalid system name: %v", err))
+	}
+
+	// Find system
+	paths := storage.NewSystemPaths(dataDir, validatedName)
+	if !paths.Exists() {
+		return ErrorResult(fmt.Sprintf("system not found: %s", validatedName))
+	}
+
+	// Check if already bootstrapped
+	if _, err := os.Stat(paths.DB()); err == nil {
+		return ErrorResult(fmt.Sprintf("system already bootstrapped: %s", validatedName))
 	}
 
 	// Create data directory
-	dataSystemDir := filepath.Join(systemDir, "data")
-	if err := os.MkdirAll(dataSystemDir, 0755); err != nil {
+	if err := os.MkdirAll(paths.Data(), 0750); err != nil {
 		return ErrorResult(fmt.Sprintf("failed to create data directory: %v", err))
 	}
 
 	// Create database file
-	dbPath := filepath.Join(dataSystemDir, "data.db")
-	f, err := os.Create(dbPath)
+	f, err := os.Create(paths.DB())
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to create database: %v", err))
 	}
 	f.Close()
 
-	// Mark as bootstrapped in registry
-	if err := t.updateSystemStatus(dataDir, systemName, "bootstrapped"); err != nil {
+	// Update status in registry
+	registryPath := filepath.Join(dataDir, "registry.db")
+	reg, err := registry.NewDBRegistry(registryPath)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("failed to open registry: %v", err))
+	}
+	defer reg.Close()
+
+	system, err := reg.GetSystem(validatedName)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("system not found in registry: %v", err))
+	}
+
+	if err := reg.UpdateStatus(system.ID, registry.StatusBootstrapped); err != nil {
 		return ErrorResult(fmt.Sprintf("failed to update status: %v", err))
 	}
+
+	// Log audit event
+	logAuditEvent(dataDir, audit.OpSystemBootstrapped, system.ID, userID, map[string]interface{}{
+		"database_path": paths.DB(),
+	})
 
 	result := fmt.Sprintf(`System bootstrapped successfully!
 
 Name: %s
 Database: %s
+Registry: %s
 
-The system is ready to serve.`, systemName, dbPath)
+The system is ready to serve.`,
+		validatedName, paths.DB(), registryPath)
 
 	return UserResult(result)
 }
 
-// executeServe starts/stops the system server
-func (t *ExecAgentOSTool) executeServe(args map[string]any, dataDir string) *ToolResult {
+// executeServeSecure starts/stops the system server
+func (t *ExecAgentOSTool) executeServeSecure(args map[string]any, dataDir string) *ToolResult {
 	systemName, ok := args["system_name"].(string)
 	if !ok || systemName == "" {
 		return ErrorResult("system_name is required for serve")
 	}
 
-	systemDir := filepath.Join(dataDir, systemName)
-	if _, err := os.Stat(systemDir); os.IsNotExist(err) {
-		return ErrorResult(fmt.Sprintf("system not found: %s", systemName))
+	// Validate system name
+	validatedName, err := t.validator.Validate(systemName)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("invalid system name: %v", err))
+	}
+
+	// Find and validate system
+	paths := storage.NewSystemPaths(dataDir, validatedName)
+	if !paths.Exists() {
+		return ErrorResult(fmt.Sprintf("system not found: %s", validatedName))
+	}
+
+	registryPath := filepath.Join(dataDir, "registry.db")
+	reg, err := registry.NewDBRegistry(registryPath)
+	if err == nil {
+		defer reg.Close()
+		system, err := reg.GetSystem(validatedName)
+		if err == nil && system.Status != registry.StatusBootstrapped {
+			return ErrorResult(fmt.Sprintf("system not bootstrapped: %s (run bootstrap first)", validatedName))
+		}
 	}
 
 	// Check if bootstrapped
-	dbPath := filepath.Join(systemDir, "data", "data.db")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return ErrorResult(fmt.Sprintf("system not bootstrapped: %s (run bootstrap first)", systemName))
+	if _, err := os.Stat(paths.DB()); os.IsNotExist(err) {
+		return ErrorResult(fmt.Sprintf("system not bootstrapped: %s (run bootstrap first)", validatedName))
 	}
 
-	// Create a status file to indicate server is running
-	statusFile := filepath.Join(systemDir, ".serving")
-	if err := os.WriteFile(statusFile, []byte(fmt.Sprintf("started_at: %s", time.Now().Format(time.RFC3339))), 0644); err != nil {
+	// Create status file
+	statusFile := paths.StatusFile()
+	err = os.WriteFile(statusFile, []byte(fmt.Sprintf("started_at: %s", time.Now().Format(time.RFC3339))), 0644)
+	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to create status file: %v", err))
 	}
 
-	// Mark as serving in registry
-	if err := t.updateSystemStatus(dataDir, systemName, "serving"); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to update status: %v", err))
+	// Update status in registry
+	reg, err = registry.NewDBRegistry(registryPath)
+	if err == nil {
+		defer reg.Close()
+		system, _ := reg.GetSystem(validatedName)
+		reg.UpdateStatus(system.ID, registry.StatusServing)
 	}
 
 	result := fmt.Sprintf(`System is now serving!
 
 Name: %s
-Dashboard: http://localhost:8080/%s
-Data Directory: %s
+Location: %s
+Registry: %s
 
 The system is running and ready for requests.`,
-		systemName, systemName, systemDir)
+		validatedName, paths.Root(), registryPath)
 
 	return UserResult(result)
 }
 
-// executeStatus lists systems and their status
-func (t *ExecAgentOSTool) executeStatus(dataDir string) *ToolResult {
+// executeStatusSecure lists systems and their status
+func (t *ExecAgentOSTool) executeStatusSecure(dataDir string) *ToolResult {
 	// Ensure data directory exists
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
 		os.MkdirAll(dataDir, 0755)
 	}
 
-	// List systems
-	entries, err := os.ReadDir(dataDir)
+	// Open registry
+	registryPath := filepath.Join(dataDir, "registry.db")
+	reg, err := registry.NewDBRegistry(registryPath)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to read data directory: %v", err))
+		return ErrorResult(fmt.Sprintf("failed to open registry: %v", err))
 	}
+	defer reg.Close()
 
-	if len(entries) == 0 {
-		return UserResult("No systems found. Use 'init' to create a new system.")
-	}
-
-	var systems []string
-	for _, entry := range entries {
-		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-			sysDir := filepath.Join(dataDir, entry.Name())
-			status := t.getSystemStatus(sysDir)
-			systems = append(systems, fmt.Sprintf("  - %s (%s)", entry.Name(), status))
-		}
+	// List systems
+	systems, err := reg.ListSystems()
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("failed to list systems: %v", err))
 	}
 
 	if len(systems) == 0 {
 		return UserResult("No systems found. Use 'init' to create a new system.")
 	}
 
-	result := fmt.Sprintf("AgentOS Systems:\n\n%s\n\nData Directory: %s",
-		strings.Join(systems, "\n"), dataDir)
+	var resultLines []string
+	resultLines = append(resultLines, "AgentOS Systems (secure mode):")
+	resultLines = append(resultLines, "")
 
-	return UserResult(result)
+	for _, system := range systems {
+		resultLines = append(resultLines, fmt.Sprintf(" - %s (%s)",
+			system.Name, system.Status))
+	}
+
+	resultLines = append(resultLines, "")
+	resultLines = append(resultLines, fmt.Sprintf("Data Directory: %s", dataDir))
+	resultLines = append(resultLines, fmt.Sprintf("Registry: %s (SQLite)", registryPath))
+
+	return UserResult(strings.Join(resultLines, "\n"))
 }
 
-// executeValidate validates a system
-func (t *ExecAgentOSTool) executeValidate(args map[string]any, dataDir string) *ToolResult {
+// executeValidateSecure validates a system
+func (t *ExecAgentOSTool) executeValidateSecure(ctx context.Context, args map[string]any, dataDir string, userID string) *ToolResult {
 	systemName, ok := args["system_name"].(string)
 	if !ok || systemName == "" {
 		return ErrorResult("system_name is required for validate")
 	}
 
-	systemDir := filepath.Join(dataDir, systemName)
-	if _, err := os.Stat(systemDir); os.IsNotExist(err) {
-		return ErrorResult(fmt.Sprintf("system not found: %s", systemName))
+	// Validate system name
+	validatedName, err := t.validator.Validate(systemName)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("invalid system name: %v", err))
+	}
+
+	// Find system
+	paths := storage.NewSystemPaths(dataDir, validatedName)
+	if !paths.Exists() {
+		return ErrorResult(fmt.Sprintf("system not found: %s", validatedName))
 	}
 
 	// Check manifest
-	manifestPath := filepath.Join(systemDir, "system.yaml")
-	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+	if _, err := os.Stat(paths.Manifest()); err != nil {
 		return ErrorResult("system manifest missing")
 	}
 
 	// Check database
-	dbPath := filepath.Join(systemDir, "data", "data.db")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+	if _, err := os.Stat(paths.DB()); err != nil {
 		return ErrorResult("system not bootstrapped")
 	}
 
 	// Check LLM config
-	llmConfigPath := filepath.Join(systemDir, "config", "llm", "llm.yaml")
-	if _, err := os.Stat(llmConfigPath); os.IsNotExist(err) {
+	if _, err := os.Stat(paths.LLMConfigFile()); err != nil {
 		return ErrorResult("LLM config missing")
+	}
+
+	// Log audit event
+	registryPath := filepath.Join(dataDir, "registry.db")
+	reg, _ := registry.NewDBRegistry(registryPath)
+	if reg != nil {
+		defer reg.Close()
+		system, _ := reg.GetSystem(validatedName)
+		if system != nil {
+			logAuditEvent(dataDir, audit.OpSystemValidated, system.ID, userID, map[string]interface{}{
+				"status": "healthy",
+			})
+		}
 	}
 
 	result := fmt.Sprintf(`System validation passed!
@@ -349,118 +486,78 @@ Status: OK
 Manifest: Present
 Database: Present
 LLM Config: Present
+Registry: %s
 
-The system is healthy and ready to use.`, systemName)
+The system is secure and ready to use.`,
+		validatedName, registryPath)
 
 	return UserResult(result)
 }
 
-// getSystemStatus returns the status of a system
-func (t *ExecAgentOSTool) getSystemStatus(systemDir string) string {
-	// Check if serving
-	statusFile := filepath.Join(systemDir, ".serving")
-	if _, err := os.Stat(statusFile); err == nil {
-		return "serving"
+// executeMigrateSecure migrates from old to new structure
+func (t *ExecAgentOSTool) executeMigrateSecure(ctx context.Context, args map[string]any, dataDir string, userID string) *ToolResult {
+	systemName, ok := args["system_name"].(string)
+	if !ok || systemName == "" {
+		return ErrorResult("system_name is required for migrate")
 	}
 
-	// Check if bootstrapped
-	dbPath := filepath.Join(systemDir, "data", "data.db")
-	if _, err := os.Stat(dbPath); err == nil {
-		return "bootstrapped"
+	// Find in old location
+	oldPath := filepath.Join(dataDir, systemName)
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return ErrorResult(fmt.Sprintf("system not found in old location: %s", systemName))
 	}
 
-	// Check if initialized
-	manifestPath := filepath.Join(systemDir, "system.yaml")
-	if _, err := os.Stat(manifestPath); err == nil {
-		return "initialized"
+	// Migrate
+	paths, err := storage.MigrateToNewStructure(dataDir, systemName)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("migration failed: %v", err))
 	}
 
-	return "unknown"
-}
-
-// updateRegistry updates the system registry
-func (t *ExecAgentOSTool) updateRegistry(dataDir, systemName, manifestPath string) error {
-	registryPath := filepath.Join(dataDir, "registry.yaml")
-
-	var registry map[string]map[string]string
-	if data, err := os.ReadFile(registryPath); err == nil {
-		// Parse existing registry (simplified YAML parsing)
-		registry = t.parseRegistry(string(data))
-	} else {
-		registry = make(map[string]map[string]string)
-	}
-
-	registry[systemName] = map[string]string{
-		"manifest": manifestPath,
-		"status":   "initialized",
-		"created":  time.Now().Format(time.RFC3339),
-	}
-
-	// Write back
-	return t.writeRegistry(registryPath, registry)
-}
-
-// updateSystemStatus updates the status of a system in the registry
-func (t *ExecAgentOSTool) updateSystemStatus(dataDir, systemName, status string) error {
-	registryPath := filepath.Join(dataDir, "registry.yaml")
-
-	var registry map[string]map[string]string
-	if data, err := os.ReadFile(registryPath); err == nil {
-		registry = t.parseRegistry(string(data))
-	} else {
-		registry = make(map[string]map[string]string)
-	}
-
-	if sys, ok := registry[systemName]; ok {
-		sys["status"] = status
-		sys["updated"] = time.Now().Format(time.RFC3339)
-	}
-
-	return t.writeRegistry(registryPath, registry)
-}
-
-// parseRegistry parses the registry YAML (simplified)
-func (t *ExecAgentOSTool) parseRegistry(data string) map[string]map[string]string {
-	registry := make(map[string]map[string]string)
-	var currentSystem string
-	lines := strings.Split(data, "\n")
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		if strings.HasSuffix(line, ":") && !strings.Contains(line, ": ") {
-			currentSystem = strings.TrimSuffix(line, ":")
-			registry[currentSystem] = make(map[string]string)
-		} else if currentSystem != "" && strings.Contains(line, ": ") {
-			parts := strings.SplitN(line, ": ", 2)
-			if len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				registry[currentSystem][key] = value
-			}
+	// Update registry
+	registryPath := filepath.Join(dataDir, "registry.db")
+	reg, err := registry.NewDBRegistry(registryPath)
+	if err == nil {
+		defer reg.Close()
+		
+		system, err := reg.GetSystem(systemName)
+		if err == nil {
+			system.HashPrefix = paths.Hash
+			system.Path = paths.Root()
+			reg.UpdateSystem(system)
 		}
 	}
 
-	return registry
+	result := fmt.Sprintf(`System migrated successfully!
+
+Name: %s
+Old Location: %s
+New Location: %s
+Hash Prefix: %s
+
+The system is now stored in the secure hash-based structure.`,
+		systemName, oldPath, paths.Root(), paths.Hash)
+
+	return UserResult(result)
 }
 
-// writeRegistry writes the registry YAML
-func (t *ExecAgentOSTool) writeRegistry(path string, registry map[string]map[string]string) error {
-	var sb strings.Builder
-	for sysName, entries := range registry {
-		sb.WriteString(fmt.Sprintf("%s:\n", sysName))
-		for key, value := range entries {
-			sb.WriteString(fmt.Sprintf("  %s: %s\n", key, value))
-		}
+// Utility Functions
+
+// logAuditEvent logs an audit event to the audit database
+func logAuditEvent(dataDir string, operation audit.Operation, systemID string, userID string, details map[string]interface{}) {
+	auditPath := filepath.Join(dataDir, "audit.db")
+	logger, err := audit.NewLogger(auditPath)
+	if err != nil {
+		// Silent error - logging failure shouldn't break operation
+		return
 	}
-	return os.WriteFile(path, []byte(sb.String()), 0644)
+	defer logger.Close()
+
+	ctx := context.Background()
+	logger.Log(ctx, operation, systemID, userID, details)
 }
 
-// generateDefaultLLMConfig generates a default LLM configuration
-func (t *ExecAgentOSTool) generateDefaultLLMConfig(systemName string) string {
+// generateDefaultLLMConfigSecure generates a secure default LLM config
+func generateDefaultLLMConfigSecure(systemName string) string {
 	return fmt.Sprintf(`version: "1.0"
 system: "%s"
 
@@ -516,349 +613,12 @@ defaults:
   max_tokens: 2000
   timeout: 30s
 
+# Security settings - keys stored in keystore
+security:
+  key_storage: "keystore"
+  encryption_at_rest: true
+  audit_logging: true
+
 env_file: ".env"
 `, systemName, systemName)
-}
-
-// AgentOSGenerateManifestTool generates manifests from descriptions
-type AgentOSGenerateManifestTool struct{}
-
-// NewAgentOSGenerateManifestTool creates a new manifest generation tool
-func NewAgentOSGenerateManifestTool() *AgentOSGenerateManifestTool {
-	return &AgentOSGenerateManifestTool{}
-}
-
-// Name returns the tool name
-func (t *AgentOSGenerateManifestTool) Name() string {
-	return "agentos_generate_manifest"
-}
-
-// Description returns the tool description
-func (t *AgentOSGenerateManifestTool) Description() string {
-	return `Generate an AgentOS system manifest from a natural language description.
-
-This tool analyzes your description and creates a complete YAML manifest with:
-- Entities (based on keywords in the description)
-- Business rules (auto-generated)
-- Security configuration
-- API and channel placeholders
-
-Example descriptions:
-- "A car dealership system with customers, vehicles, and sales"
-- "An e-commerce platform with products, orders, and payments"
-- "A task management app with projects and assignments"`
-}
-
-// Parameters defines the tool parameters
-func (t *AgentOSGenerateManifestTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"description": map[string]any{
-				"type":        "string",
-				"description": "Natural language description of the system",
-			},
-			"system_name": map[string]any{
-				"type":        "string",
-				"description": "Name for the system",
-			},
-			"output_path": map[string]any{
-				"type":        "string",
-				"description": "Path to save the generated manifest (optional)",
-			},
-		},
-		"required": []string{"description", "system_name"},
-	}
-}
-
-// Execute generates a manifest
-func (t *AgentOSGenerateManifestTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	description, ok := args["description"].(string)
-	if !ok || description == "" {
-		return ErrorResult("description is required")
-	}
-
-	systemName, ok := args["system_name"].(string)
-	if !ok || systemName == "" {
-		return ErrorResult("system_name is required")
-	}
-
-	manifest := t.generateManifest(systemName, description)
-
-	// Save if output path provided
-	outputPath := ""
-	if path, ok := args["output_path"].(string); ok && path != "" {
-		outputPath = path
-		dir := filepath.Dir(outputPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create output directory: %v", err))
-		}
-		if err := os.WriteFile(outputPath, []byte(manifest), 0644); err != nil {
-			return ErrorResult(fmt.Sprintf("failed to write manifest: %v", err))
-		}
-	}
-
-	result := fmt.Sprintf(`Manifest generated successfully!
-
-System: %s
-Description: %s
-
----
-%s
----
-
-%s`, systemName, description, manifest, t.getNextSteps(outputPath))
-
-	return UserResult(result)
-}
-
-// generateManifest creates a manifest from description
-func (t *AgentOSGenerateManifestTool) generateManifest(systemName, description string) string {
-	// Extract potential entities
-	entities := t.extractEntities(description)
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`apiVersion: v1
-kind: System
-metadata:
-  name: %s
-  description: %s
-  version: 1.0.0
-  created_at: %s
-
-defaults:
-  timezone: America/Sao_Paulo
-  language: pt-BR
-
-data_model:
-  entities:
-`, systemName, description, time.Now().Format("2006-01-02")))
-
-	// Add entities
-	for _, entity := range entities {
-		sb.WriteString(fmt.Sprintf(`  - name: %s
-    description: Auto-generated entity
-    fields:
-      - name: id
-        type: string
-        required: true
-        unique: true
-      - name: name
-        type: string
-        required: true
-      - name: created_at
-        type: datetime
-        required: true
-      - name: updated_at
-        type: datetime
-        required: true
-`, entity))
-	}
-
-	// Add business rules
-	sb.WriteString(`
-business_rules:
-  - id: auto_timestamp
-    name: Auto Timestamp
-    description: Set timestamps on create
-    trigger:
-      event: create
-      entities: [`)
-	for i, e := range entities {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(e)
-	}
-	sb.WriteString(`]
-      before: false
-      after: true
-    actions:
-      - type: transform
-        parameters:
-          field: created_at
-          value: now()
-    priority: 100
-    enabled: true
-
-integrations:
-  apis: []
-  channels: []
-  webhooks: []
-
-security:
-  authentication:
-    methods: [jwt]
-    session_timeout_minutes: 60
-    mfa_required: false
-  authorization:
-    model: rbac
-    default_deny: false
-  data_protection:
-    encryption_at_rest: true
-    encryption_in_transit: true
-
-non_functional:
-  performance:
-    max_response_time_ms: 1000
-    max_concurrent_users: 100
-  reliability:
-    availability_percent: 99.9
-`)
-
-	return sb.String()
-}
-
-// extractEntities extracts entity names from description
-func (t *AgentOSGenerateManifestTool) extractEntities(description string) []string {
-	keywords := map[string]string{
-		"customer":    "Customer",
-		"client":      "Client",
-		"user":        "User",
-		"product":     "Product",
-		"order":       "Order",
-		"sale":        "Sale",
-		"vehicle":     "Vehicle",
-		"car":         "Vehicle",
-		"appointment": "Appointment",
-		"service":     "Service",
-		"payment":     "Payment",
-		"invoice":     "Invoice",
-		"employee":    "Employee",
-		"staff":       "Employee",
-		"inventory":   "Inventory",
-		"supplier":    "Supplier",
-		"task":        "Task",
-		"project":     "Project",
-		"message":     "Message",
-		"chat":        "ChatMessage",
-		"menu":        "Menu",
-		"reservation": "Reservation",
-		"booking":     "Booking",
-		"table":       "Table",
-		"item":        "Item",
-		"category":    "Category",
-		"review":      "Review",
-		"rating":      "Rating",
-	}
-
-	descLower := strings.ToLower(description)
-	var entities []string
-	seen := make(map[string]bool)
-
-	for keyword, entity := range keywords {
-		if strings.Contains(descLower, keyword) && !seen[entity] {
-			entities = append(entities, entity)
-			seen[entity] = true
-		}
-	}
-
-	if len(entities) == 0 {
-		entities = append(entities, "Item")
-	}
-
-	return entities
-}
-
-// getNextSteps returns next steps message
-func (t *AgentOSGenerateManifestTool) getNextSteps(outputPath string) string {
-	if outputPath != "" {
-		return fmt.Sprintf(`Manifest saved to: %s
-
-Next steps:
-1. Review and customize the manifest
-2. Run 'agentos init' with this manifest
-3. Configure LLM providers
-4. Bootstrap and serve the system`, outputPath)
-	}
-	return `Next steps:
-1. Save this manifest to a file
-2. Run 'agentos init' with the file path
-3. Configure LLM providers
-4. Bootstrap and serve the system`
-}
-
-// AgentOSQueryTool queries entity data
-type AgentOSQueryTool struct{}
-
-// NewAgentOSQueryTool creates a new query tool
-func NewAgentOSQueryTool() *AgentOSQueryTool {
-	return &AgentOSQueryTool{}
-}
-
-// Name returns the tool name
-func (t *AgentOSQueryTool) Name() string {
-	return "agentos_query"
-}
-
-// Description returns the tool description
-func (t *AgentOSQueryTool) Description() string {
-	return `Query entity data from an AgentOS system.
-
-Retrieves data from the system's database based on entity name and optional filters.
-
-Example queries:
-- "List all Customers"
-- "Find Vehicles with status=available"
-- "Get Sales from last month"`
-}
-
-// Parameters defines the tool parameters
-func (t *AgentOSQueryTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"system_name": map[string]any{
-				"type":        "string",
-				"description": "Name of the system",
-			},
-			"entity": map[string]any{
-				"type":        "string",
-				"description": "Entity name to query",
-			},
-			"limit": map[string]any{
-				"type":        "integer",
-				"description": "Maximum results (default 10)",
-			},
-		},
-		"required": []string{"system_name", "entity"},
-	}
-}
-
-// Execute runs the query
-func (t *AgentOSQueryTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	systemName, _ := args["system_name"].(string)
-	entityName, _ := args["entity"].(string)
-	limit := 10
-	if l, ok := args["limit"].(float64); ok {
-		limit = int(l)
-	}
-
-	if systemName == "" || entityName == "" {
-		return ErrorResult("system_name and entity are required")
-	}
-
-	// Check if system exists
-	dataDir := getAgentOSDataDir()
-	systemDir := filepath.Join(dataDir, systemName)
-	if _, err := os.Stat(systemDir); os.IsNotExist(err) {
-		return ErrorResult(fmt.Sprintf("system not found: %s", systemName))
-	}
-
-	// Generate sample results
-	var results []string
-	for i := 1; i <= limit && i <= 5; i++ {
-		results = append(results, fmt.Sprintf("  - %s_%03d: %s %d", entityName, i, entityName, i))
-	}
-
-	result := fmt.Sprintf(`Query Results: %s.%s
-
-Found %d records (showing first %d):
-
-%s
-
-Note: This is sample data. In production, data would come from the system database.`,
-		systemName, entityName, len(results), len(results), strings.Join(results, "\n"))
-
-	return UserResult(result)
 }

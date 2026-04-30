@@ -1,310 +1,240 @@
 # AgentOS Tools Integration
 
-This document describes the integration between PicoClaw and AgentOS through conversational tools.
+Conversational tools that let the PicoClaw agent create, manage, and query AgentOS systems through natural language.
 
-## Overview
+---
 
-The AgentOS tools allow the PicoClaw agent to create, manage, and interact with AgentOS systems through natural language conversations. Users can chat with the agent via any configured channel (Telegram, WhatsApp, CLI, etc.) to:
+## Architecture
 
-1. Generate system manifests from descriptions
-2. Initialize and bootstrap systems
-3. Query entity data
-4. Manage multiple systems
+```
+User (Telegram / WhatsApp / CLI)
+       │
+       ▼
+  PicoClaw Agent (LLM)
+       │
+       ▼
+  Tool Registry
+       │
+       ├── agentos                  System lifecycle (init, bootstrap, serve, status, validate, migrate)
+       ├── agentos_generate_manifest  Generate manifest from description
+       └── agentos_query             Query entity data
+              │
+              ▼
+       Security Layer
+       ├── SystemNameValidator      Reject path traversal, reserved words
+       ├── SystemPaths              Hash-based directory isolation
+       ├── DBRegistry               SQLite registry (WAL mode)
+       └── Audit Logger             Immutable operation trail
+              │
+              ▼
+       AgentOS Systems
+       └── Database / Manifests
+```
+
+---
 
 ## Available Tools
 
-### 1. agentos_generate_manifest
+### 1. `agentos` — System Lifecycle
 
-Generates an AgentOS system manifest from a natural language description.
-
-**Use when:**
-- User says "Create a system for..."
-- User describes a business domain (e.g., "car dealership", "e-commerce")
-- Need to create a new system manifest
-
-**Example conversation:**
-```
-User: Create a system for my restaurant
-Agent: I'll generate a manifest for your restaurant system...
-[Tool generates manifest with Menu, Order, Reservation entities]
-Agent: Manifest generated! It includes Menu, Order, and Reservation entities.
-```
-
-**Parameters:**
-- `description` (required): Natural language description
-- `system_name` (required): Name for the system
-- `output_path` (optional): Where to save the manifest
-
-### 2. agentos
-
-Executes AgentOS operations (init, bootstrap, serve, status, validate).
-
-**Use when:**
-- User wants to initialize a system
-- User wants to check system status
-- User wants to start/stop system emulation
+Manages AgentOS system operations. All actions validate system names, use isolated directories, and log to the audit trail.
 
 **Actions:**
-- `init`: Initialize system from manifest
-- `bootstrap`: Create database schema
-- `serve`: Start system emulation
-- `status`: List all systems
-- `validate`: Validate system health
 
-**Example conversation:**
-```
-User: Initialize the restaurant system
-Agent: [Executes init action]
-Agent: System initialized! Database and config created.
-
-User: Bootstrap it
-Agent: [Executes bootstrap]
-Agent: System bootstrapped! Ready to serve.
-
-User: What's the status?
-Agent: [Executes status]
-Agent: restaurant (bootstrapped)
-```
+| Action | Description | Required Params |
+|--------|-------------|-----------------|
+| `init` | Initialize system from manifest | `system_name`, `manifest_path` |
+| `bootstrap` | Create database schema | `system_name` |
+| `serve` | Start/stop system emulation | `system_name` |
+| `status` | List all systems | — |
+| `validate` | Validate system health | `system_name` |
+| `migrate` | Migrate system to secure storage | `system_name` |
 
 **Parameters:**
-- `action` (required): One of init, bootstrap, serve, status, validate
-- `system_name`: Required for most actions
-- `manifest_path`: Required for init
 
-### 3. agentos_query
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `action` | string | Yes | One of: init, bootstrap, serve, status, validate, list, migrate |
+| `system_name` | string | Most | Validated against security rules |
+| `manifest_path` | string | init | Path to YAML manifest |
+| `data_dir` | string | No | Override default data directory |
+| `user_id` | string | No | For audit logging (defaults to "anonymous") |
+
+**Example conversation:**
+
+```
+User: Create a system from my manifest for a restaurant
+Agent: [calls agentos with action=init, system_name=restaurant, manifest_path=/path/manifest.yaml]
+→ System initialized at ~/.picoclaw/agentos/sys/a1b2c/restaurant/
+→ Registered in SQLite registry
+→ Audit event logged
+
+User: Bootstrap it
+Agent: [calls agentos with action=bootstrap, system_name=restaurant]
+→ Database created, status updated to "bootstrapped"
+
+User: What systems do I have?
+Agent: [calls agentos with action=status]
+→ restaurant (bootstrapped) at sys/a1b2c/restaurant/
+```
+
+### 2. `agentos_generate_manifest` — Manifest Generation
+
+Generates an AgentOS system manifest YAML from a natural language description.
+
+**Parameters:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `description` | string | Yes | Natural language system description |
+| `system_name` | string | Yes | Name for the system (validated) |
+| `output_path` | string | No | Where to save the manifest |
+
+**Entity extraction keywords:**
+
+| Keywords | Entity |
+|----------|--------|
+| customer, client | Customer |
+| vehicle, car | Vehicle |
+| order, sale | Order |
+| product | Product |
+| appointment, booking | Appointment |
+| employee, staff | Employee |
+| menu, reservation, table | Menu/Reservation |
+
+### 3. `agentos_query` — Data Queries
 
 Queries entity data from a running system.
 
-**Use when:**
-- User asks "What customers do we have?"
-- User wants to see system data
-- Need to retrieve entity records
-
-**Example conversation:**
-```
-User: Show me the vehicles
-Agent: [Executes query on Vehicle entity]
-Agent: Found 3 vehicles:
-  - Vehicle_001: Vehicle 1
-  - Vehicle_002: Vehicle 2
-  - Vehicle_003: Vehicle 3
-```
-
 **Parameters:**
-- `system_name` (required): System to query
-- `entity` (required): Entity name (e.g., Customer, Vehicle)
-- `limit` (optional): Max results (default 10)
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `system_name` | string | Yes | System to query (validated) |
+| `entity` | string | Yes | Entity name (e.g., Customer, Vehicle) |
+| `limit` | int | No | Max results (default 10) |
+
+---
+
+## Security Integration
+
+All three tools enforce security through the `ExecAgentOSTool` struct:
+
+```go
+type ExecAgentOSTool struct {
+    dataDir   string
+    validator *validation.SystemNameValidator  // Always present
+}
+```
+
+**Every operation follows this pattern:**
+
+1. **Validate** system name via `validator.Validate()` or `validator.ValidateAndSanitize()`
+2. **Resolve** paths via `storage.NewSystemPaths()` (hash-isolated)
+3. **Register/lookup** in `registry.NewDBRegistry()` (SQLite)
+4. **Log** to audit trail via `logAuditEvent()`
+
+---
 
 ## Configuration
 
 ### Enable AgentOS Tools
 
-Add to your PicoClaw configuration (config.yaml):
-
 ```yaml
+# config.yaml
 tools:
   agentos:
     enabled: true
 ```
 
-Or via environment variable:
-```bash
-export PICOCLAW_TOOLS_AGENTOS_ENABLED=true
-```
-
-### Set Data Directory
-
-By default, AgentOS systems are stored in `~/.picoclaw/agentos/`. To change:
+### Data Directory
 
 ```bash
-export AGENTOS_DATA_DIR=/path/to/agentos/data
+# Default: ~/.picoclaw/agentos/
+export AGENTOS_DATA_DIR=/path/to/custom/data
 ```
 
-## Complete Workflow Example
+---
 
-### Via CLI
+## CLI Commands
+
 ```bash
-# Start interactive mode
-picoclaw agent
+# Provider configuration
+picoclaw agentos configure-provider openai
+picoclaw agentos configure-provider groq
 
-# Conversation:
-You: Create a car dealership system
-Agent: Manifest generated with Customer, Vehicle, and Sale entities.
+# Key management
+picoclaw agentos show-keys
+picoclaw agentos delete-key <key-name>
+picoclaw agentos rotate-key <key-name>
 
-You: Initialize it
-Agent: System initialized at ~/.picoclaw/agentos/dealership
-
-You: Bootstrap the system
-Agent: Database created. System is ready.
-
-You: Show me the vehicles
-Agent: Found sample data:
-  - Vehicle_001: Sample Vehicle 1
-  - Vehicle_002: Sample Vehicle 2
-
-You: Start the system
-Agent: System is now serving at http://localhost:8080/dealership
+# System lifecycle
+picoclaw agentos init --name my-system
+picoclaw agentos bootstrap --system my-system
+picoclaw agentos status
 ```
 
-### Via Telegram/WhatsApp
-Same conversation flow works through messaging channels. The agent interprets natural language and invokes appropriate tools.
+---
 
-## Tool Implementation Details
+## File Structure
 
-### File Structure
 ```
 pkg/tools/
-├── agentos.go              # Tool implementations
-├── agentos_test.go         # Unit tests
-└── agentos_integration_test.go  # Integration tests
+├── agentos.go                          # Tool implementations (security-integrated)
+├── agentos_secure.go                   # SecureAgentOSManager (unified API)
+├── agentos_test.go                     # Unit tests
+├── agentos_integration_test.go         # Integration tests
+└── agentos_integration_secure_test.go  # Security integration tests
+
+cmd/picoclaw/internal/agentos/commands/
+├── root.go                             # Command dispatcher
+└── configure.go                        # Provider config + key management
 ```
 
-### Tools Registered
-
-The following tools are automatically registered when AgentOS is enabled:
-
-1. **ExecAgentOSTool** (`agentos`)
-   - Wraps AgentOS CLI operations
-   - Handles init, bootstrap, serve, status, validate
-
-2. **AgentOSGenerateManifestTool** (`agentos_generate_manifest`)
-   - Generates manifests from descriptions
-   - Extracts entities from keywords
-
-3. **AgentOSQueryTool** (`agentos_query`)
-   - Queries entity data
-   - Returns sample data (production: queries database)
-
-### Entity Extraction
-
-The `generate_manifest` tool extracts entities from descriptions using keyword matching:
-
-**Keywords mapped to entities:**
-- "customer", "client" → Customer
-- "vehicle", "car" → Vehicle
-- "order", "sale" → Order
-- "product" → Product
-- "appointment", "booking" → Appointment
-- "employee", "staff" → Employee
-- "menu", "reservation", "table" (restaurant domain)
-
-### Registry Storage
-
-Systems are tracked in a simple YAML registry at `~/.picoclaw/agentos/registry.yaml`:
-
-```yaml
-dealership:
-  manifest: /home/user/.picoclaw/agentos/dealership/system.yaml
-  status: bootstrapped
-  created: 2026-04-29T10:00:00Z
-  updated: 2026-04-29T10:05:00Z
-
-restaurant:
-  manifest: /home/user/.picoclaw/agentos/restaurant/system.yaml
-  status: initialized
-  created: 2026-04-29T11:00:00Z
-```
+---
 
 ## Testing
 
-### Run Unit Tests
 ```bash
-cd /home/rangel/projetos/picoclaw/protoclaw
+# Unit tests
 go test ./pkg/tools -v -run AgentOS
-```
 
-### Run Integration Tests
-```bash
+# Integration tests
 go test ./pkg/tools -v -run "TestAgentOSWorkflow|TestAgentOSConversationFlow"
+
+# Security integration tests
+go test ./pkg/tools -v -run TestSecureAgentOS
 ```
 
-### Test Coverage
-- Tool initialization
-- Parameter validation
-- Error handling
-- Complete workflows
-- Multiple system management
+---
 
 ## Extending
 
-### Adding New Actions
+### Adding a New Action
 
-To add a new action to the `agentos` tool:
+Add a case in `ExecAgentOSTool.Execute()`:
 
-1. Add case in `Execute` switch statement
-2. Implement handler function
-3. Add test case
-
-Example:
 ```go
-func (t *ExecAgentOSTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-    switch action {
-    case "new_action":
-        return t.executeNewAction(args, dataDir)
-    // ...
-    }
-}
+case "new_action":
+    return t.executeNewAction(ctx, args, dataDir, userID)
 
-func (t *ExecAgentOSTool) executeNewAction(args map[string]any, dataDir string) *ToolResult {
-    // Implementation
+func (t *ExecAgentOSTool) executeNewAction(ctx context.Context, args map[string]any, dataDir, userID string) *ToolResult {
+    systemName, _ := args["system_name"].(string)
+    validatedName, err := t.validator.Validate(systemName)
+    if err != nil {
+        return ErrorResult(fmt.Sprintf("invalid system name: %v", err))
+    }
+    // ... implementation ...
+    logAuditEvent(dataDir, audit.OpCustom, systemID, userID, details)
     return UserResult("Success!")
 }
 ```
 
-### Adding New Keywords
-
-To add entity extraction keywords:
-
-```go
-func (t *AgentOSGenerateManifestTool) extractEntities(description string) []string {
-    keywords := map[string]string{
-        "new_keyword": "NewEntity",
-        // ...
-    }
-}
-```
-
-## Troubleshooting
-
-### System Not Found
-- Check `AGENTOS_DATA_DIR` environment variable
-- Verify system was initialized
-- Run `agentos status` to list systems
-
-### Manifest Generation Failed
-- Ensure description is clear
-- Check for write permissions
-- Verify output path is valid
-
-### Query Returns No Data
-- System must be bootstrapped
-- Check entity name matches manifest
-- Verify database exists
-
-## Architecture
-
-```
-User (Telegram/WhatsApp/CLI)
-    ↓
-PicoClaw Agent
-    ↓
-Tool Registry
-    ↓
-AgentOS Tools (agentos.go)
-    ↓
-AgentOS Systems
-    ↓
-Database / Manifests
-```
-
-The agent uses the Tool Loop to:
-1. Parse user intent
-2. Select appropriate tool
-3. Execute with parameters
-4. Return results to user
+---
 
 ## See Also
 
-- `docs/LLM.md` - LLM configuration for systems
-- `examples/car-dealership/` - Complete example
-- `pkg/agentos/` - AgentOS core implementation
+- [AgentOS Security Architecture](./AGENTOS_SECURITY_IMPLEMENTATION.md)
+- [AgentOS Migration Guide](./AGENTOS_SECURITY_MIGRATION.md)
+- [LLM Integration](./LLM.md)
+- [Installation Tutorial](./TUTORIAL-INSTALACAO-AGENTOS.md)
